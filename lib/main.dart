@@ -13,7 +13,7 @@ class WhatsAppMonitorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WhatsApp Number Tracker',
+      title: 'WhatsApp Message Tracker',
       theme: ThemeData(primarySwatch: Colors.green),
       home: const WhatsAppMobileMonitor(),
     );
@@ -31,7 +31,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   static const MethodChannel _channel = MethodChannel('com.example.whatsapp_monitor/accessibility');
   static const MethodChannel _contactsChannel = MethodChannel('com.example.whatsapp_monitor/contacts');
   List<Map<String, String>> savedContacts = []; // Phone contacts with name and number
-  List<String> whatsappNumbers = []; // Unsaved WhatsApp numbers
+  List<Map<String, String>> messagedContacts = []; // All messaged contacts (saved and unsaved)
   bool isMonitoring = false;
 
   @override
@@ -77,10 +77,28 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         try {
           final eventData = jsonDecode(call.arguments as String) as Map<String, dynamic>;
           final text = eventData['text'] ?? '';
-          if (_isPhoneNumber(text)) {
+          if (text.isNotEmpty && !messagedContacts.any((c) => c['number'] == text || c['name'] == text)) {
             setState(() {
-              if (!whatsappNumbers.contains(text) && !savedContacts.any((c) => c['number'] == text)) {
-                whatsappNumbers.add(text);
+              if (_isPhoneNumber(text)) {
+                // Unsaved contact (phone number visible)
+                final savedMatch = savedContacts.firstWhere(
+                  (c) => c['number'] == text,
+                  orElse: () => {'name': 'Unknown', 'number': text},
+                );
+                messagedContacts.add({
+                  'name': savedMatch['name']!,
+                  'number': text,
+                });
+              } else {
+                // Saved contact (name visible)
+                final savedMatch = savedContacts.firstWhere(
+                  (c) => c['name'] == text,
+                  orElse: () => {'name': text, 'number': 'Not Available'},
+                );
+                messagedContacts.add({
+                  'name': text,
+                  'number': savedMatch['number']!,
+                });
               }
             });
           }
@@ -144,8 +162,11 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   @override
   Widget build(BuildContext context) {
+    // Filter out contacts where the number is "Not Available"
+    final filteredMessagedContacts = messagedContacts.where((contact) => contact['number'] != 'Not Available').toList();
+
     return Scaffold(
-      appBar: AppBar(title: const Text('WhatsApp Number Tracker'), backgroundColor: Colors.green),
+      appBar: AppBar(title: const Text('WhatsApp Message Tracker'), backgroundColor: Colors.green),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -154,46 +175,24 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
             Text('Monitoring Status: ${isMonitoring ? 'Active (Open WhatsApp to scan)' : 'Inactive'}',
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
-            const Text('Saved Contacts (Phone):',
+            const Text('Messaged Contacts:',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             Expanded(
-              flex: 1,
-              child: savedContacts.isEmpty
-                  ? const Center(child: Text('No saved contacts found'))
+              child: filteredMessagedContacts.isEmpty
+                  ? const Center(child: Text('No messaged contacts with numbers tracked yet. Open WhatsApp or WhatsApp Business to start.'))
                   : ListView.builder(
-                      itemCount: savedContacts.length,
+                      itemCount: filteredMessagedContacts.length,
                       itemBuilder: (context, index) {
-                        final contact = savedContacts[index];
+                        final contact = filteredMessagedContacts[index];
                         return Card(
                           elevation: 2,
                           margin: const EdgeInsets.symmetric(vertical: 4),
-                          color: Colors.blue[50],
+                          color: contact['name'] == 'Unknown' ? Colors.green[50] : Colors.blue[50],
                           child: ListTile(
                             title: Text(contact['name']!),
                             subtitle: Text(contact['number']!),
                           ),
-                        );
-                      },
-                    ),
-            ),
-            const SizedBox(height: 20),
-            const Text('WhatsApp Numbers (Unsaved):',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            Expanded(
-              flex: 1,
-              child: whatsappNumbers.isEmpty
-                  ? const Center(child: Text('No WhatsApp numbers tracked yet. Open WhatsApp or WhatsApp Business to start.'))
-                  : ListView.builder(
-                      itemCount: whatsappNumbers.length,
-                      itemBuilder: (context, index) {
-                        final number = whatsappNumbers[index];
-                        return Card(
-                          elevation: 2,
-                          margin: const EdgeInsets.symmetric(vertical: 4),
-                          color: Colors.green[50],
-                          child: ListTile(title: Text(number)),
                         );
                       },
                     ),

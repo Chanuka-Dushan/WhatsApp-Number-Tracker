@@ -24,7 +24,6 @@ class WhatsAppMonitorService : AccessibilityService() {
 
     override fun onServiceConnected() {
         Log.d("WhatsAppMonitor", "Service connected")
-        // Wait for manual WhatsApp opening; no automatic launch
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -42,8 +41,6 @@ class WhatsAppMonitorService : AccessibilityService() {
                     } else {
                         Log.d("WhatsAppMonitor", "Not on Chats tab in ${it.packageName}")
                     }
-                } else {
-                    Log.d("WhatsAppMonitor", "No root node, ${it.packageName} might be in background")
                 }
             }
         }
@@ -54,20 +51,17 @@ class WhatsAppMonitorService : AccessibilityService() {
         val chatList = rootNode.findAccessibilityNodeInfosByViewId("${rootNode.packageName}:id/chat_list")
         val conversations = rootNode.findAccessibilityNodeInfosByViewId("${rootNode.packageName}:id/conversations")
         val tabIndicator = rootNode.findAccessibilityNodeInfosByText("Chats")
-
-        Log.d("WhatsAppMonitor", "ContactRows: ${contactRows.size}, ChatList: ${chatList.size}, " +
-                "Conversations: ${conversations.size}, ChatsTab: ${tabIndicator.size}")
-
+        
         return contactRows.isNotEmpty() || chatList.isNotEmpty() || conversations.isNotEmpty() || tabIndicator.isNotEmpty()
     }
 
     private fun autoScanChatList(rootNode: AccessibilityNodeInfo) {
         isScanning = true
-        val numbers = mutableListOf<String>()
-
+        val chatEntries = mutableListOf<String>()
+        
         Log.d("WhatsAppMonitor", "Initial scan of Chats tab")
-        findPhoneNumbers(rootNode, numbers)
-        sendNumbers(numbers)
+        findChatEntries(rootNode, chatEntries)
+        sendChatEntries(chatEntries)
 
         handler.postDelayed(object : Runnable {
             var scrollAttempts = 0
@@ -84,39 +78,35 @@ class WhatsAppMonitorService : AccessibilityService() {
                 scrollableNode.refresh()
                 if (!scrollableNode.isFocused) {
                     scrollableNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                    Log.d("WhatsAppMonitor", "Forced focus on RecyclerView")
                 }
 
                 if (scrollAttempts < maxScrollAttempts && performScroll(scrollableNode)) {
-                    Log.d("WhatsAppMonitor", "Scrolling chat list attempt $scrollAttempts")
                     consecutiveScrollFails = 0
-                    val newNumbers = mutableListOf<String>()
-                    findPhoneNumbers(rootNode, newNumbers)
-                    sendNumbers(newNumbers)
+                    val newEntries = mutableListOf<String>()
+                    findChatEntries(rootNode, newEntries)
+                    sendChatEntries(newEntries)
                     scrollAttempts++
                     handler.postDelayed(this, 500)
                 } else if (scrollAttempts < maxScrollAttempts) {
-                    Log.d("WhatsAppMonitor", "Scroll failed, retrying attempt $scrollAttempts")
                     consecutiveScrollFails++
                     if (consecutiveScrollFails >= maxConsecutiveFails) {
-                        Log.d("WhatsAppMonitor", "Detected end of chat list after $consecutiveScrollFails consecutive failures")
+                        Log.d("WhatsAppMonitor", "Detected end of chat list")
                         disableService()
                         return
                     }
                     scrollAttempts++
                     handler.postDelayed(this, 1000)
                 } else {
-                    Log.d("WhatsAppMonitor", "Chat list scan completed after $scrollAttempts attempts, disabling service")
+                    Log.d("WhatsAppMonitor", "Chat list scan completed")
                     disableService()
                 }
             }
-        }, 2000) // Initial 2-second delay
+        }, 2000)
     }
 
     private fun findChatListScrollableNode(rootNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         fun searchScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (node.className?.contains("RecyclerView") == true && node.isScrollable) {
-                Log.d("WhatsAppMonitor", "Found chat list scrollable node: ${node.className}, ID: ${node.viewIdResourceName}")
                 return node
             }
             val chatListIds = listOf(
@@ -125,10 +115,7 @@ class WhatsAppMonitorService : AccessibilityService() {
             )
             for (id in chatListIds) {
                 val nodes = node.findAccessibilityNodeInfosByViewId(id)
-                if (nodes.isNotEmpty()) {
-                    Log.d("WhatsAppMonitor", "Found chat list scrollable node with ID: $id")
-                    return nodes.first()
-                }
+                if (nodes.isNotEmpty()) return nodes.first()
             }
             for (i in 0 until node.childCount) {
                 val child = node.getChild(i) ?: continue
@@ -138,31 +125,29 @@ class WhatsAppMonitorService : AccessibilityService() {
             }
             return null
         }
-        val scrollable = searchScrollable(rootNode)
-        if (scrollable == null) {
-            Log.d("WhatsAppMonitor", "No RecyclerView or scrollable chat list found in hierarchy")
-        }
-        return scrollable
+        return searchScrollable(rootNode)
     }
 
     private fun performScroll(node: AccessibilityNodeInfo): Boolean {
-        val scrolled = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        Log.d("WhatsAppMonitor", "Scroll action on ${node.className}: $scrolled, " +
-                "isEnabled: ${node.isEnabled}, isVisible: ${node.isVisibleToUser}, " +
-                "isScrollable: ${node.isScrollable}")
-        return scrolled
+        return node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
     }
 
-    private fun findPhoneNumbers(node: AccessibilityNodeInfo, numbers: MutableList<String>) {
-        val text = node.text?.toString() ?: ""
-        Log.d("WhatsAppMonitor", "Checking text: '$text'")
-        if (isPhoneNumber(text)) {
-            numbers.add(text)
+    private fun findChatEntries(node: AccessibilityNodeInfo, entries: MutableList<String>) {
+        val text = node.text?.toString()?.trim()
+        if (!text.isNullOrEmpty() && text.isNotBlank() && !text.contains("\n") && text.length > 1) {
+            // Filter out irrelevant text (e.g., timestamps, message previews)
+            val isContactRow = node.viewIdResourceName?.contains("contact_row_container") == true
+            if (isContactRow || (!isPhoneNumber(text) && text.length < 20) || isPhoneNumber(text)) {
+                if (!entries.contains(text)) {
+                    Log.d("WhatsAppMonitor", "Found chat entry: '$text'")
+                    entries.add(text)
+                }
+            }
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
             if (child != null) {
-                findPhoneNumbers(child, numbers)
+                findChatEntries(child, entries)
                 child.recycle()
             }
         }
@@ -171,20 +156,18 @@ class WhatsAppMonitorService : AccessibilityService() {
     private fun isPhoneNumber(text: String): Boolean {
         val phoneRegex = Regex("\\+?[1-9]\\d{6,14}")
         val cleanedText = text.trim().replace(" ", "").replace("-", "").replace(".", "")
-        val isMatch = phoneRegex.matches(cleanedText)
-        if (isMatch) Log.d("WhatsAppMonitor", "Found number: $cleanedText")
-        return isMatch
+        return phoneRegex.matches(cleanedText)
     }
 
-    private fun sendNumbers(numbers: List<String>) {
-        numbers.forEach { number ->
+    private fun sendChatEntries(entries: List<String>) {
+        entries.forEach { entry ->
             val data = mapOf(
-                "text" to number,
+                "text" to entry,
                 "eventType" to "AutoScan",
                 "timestamp" to System.currentTimeMillis().toString(),
                 "source" to "ChatList"
             )
-            Log.d("WhatsAppMonitor", "Sending number: $data")
+            Log.d("WhatsAppMonitor", "Sending entry: $data")
             channel?.invokeMethod("onUIEvent", Gson().toJson(data))
         }
     }
@@ -192,12 +175,10 @@ class WhatsAppMonitorService : AccessibilityService() {
     private fun disableService() {
         isScanning = false
         disableSelf()
-        Log.d("WhatsAppMonitor", "Accessibility service disabled")
     }
 
     private fun dumpNodeInfo(node: AccessibilityNodeInfo) {
-        Log.d("WhatsAppMonitor", "Node class: ${node.className}, ID: ${node.viewIdResourceName}, " +
-                "Child count: ${node.childCount}")
+        Log.d("WhatsAppMonitor", "Node class: ${node.className}, ID: ${node.viewIdResourceName}, Child count: ${node.childCount}")
     }
 
     override fun onInterrupt() {
