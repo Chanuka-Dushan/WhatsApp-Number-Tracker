@@ -145,10 +145,6 @@ name=Bob,number=077xxxxxxx ,label=null
 - **Permission Issues**:
   - Grant contacts permission in app settings if denied.
 
-## Future Improvements
-- Add support for WhatsApp group chats.
-- Improve number detection for various international formats.
-- Enhance UI with search/filter options for the chat list.
 
 ## License
 This project is open-source under the MIT License.
