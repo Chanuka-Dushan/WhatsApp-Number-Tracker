@@ -59,7 +59,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       if (result == 'enabled') {
         setState(() => isMonitoring = true);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Monitoring started. Open WhatsApp to track numbers.')),
+          const SnackBar(content: Text('Monitoring started. Please open WhatsApp or WhatsApp Business manually.')),
         );
       } else {
         _showAccessibilityPrompt();
@@ -151,7 +151,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Monitoring Status: ${isMonitoring ? 'Active' : 'Inactive'}',
+            Text('Monitoring Status: ${isMonitoring ? 'Active (Open WhatsApp to scan)' : 'Inactive'}',
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             const Text('Saved Contacts (Phone):',
@@ -184,7 +184,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
             Expanded(
               flex: 1,
               child: whatsappNumbers.isEmpty
-                  ? const Center(child: Text('No WhatsApp numbers tracked yet. Open WhatsApp to start.'))
+                  ? const Center(child: Text('No WhatsApp numbers tracked yet. Open WhatsApp or WhatsApp Business to start.'))
                   : ListView.builder(
                       itemCount: whatsappNumbers.length,
                       itemBuilder: (context, index) {

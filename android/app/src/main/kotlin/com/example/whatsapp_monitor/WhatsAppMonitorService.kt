@@ -8,12 +8,11 @@ import io.flutter.plugin.common.MethodChannel
 import com.google.gson.Gson
 import android.os.Handler
 import android.os.Looper
-import android.content.Intent
-import android.content.ComponentName
 
 class WhatsAppMonitorService : AccessibilityService() {
     companion object {
         var channel: MethodChannel? = null
+        private val WHATSAPP_PACKAGES = listOf("com.whatsapp", "com.whatsapp.w4b") // Regular and Business WhatsApp
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -25,63 +24,47 @@ class WhatsAppMonitorService : AccessibilityService() {
 
     override fun onServiceConnected() {
         Log.d("WhatsAppMonitor", "Service connected")
-        // Start scanning when service is enabled
-        handler.postDelayed({ startWhatsAppScan() }, 1000) // Delay to ensure service is ready
-    }
-
-    private fun startWhatsAppScan() {
-        val rootNode = rootInActiveWindow
-        if (rootNode != null && rootNode.packageName == "com.whatsapp") {
-            Log.d("WhatsAppMonitor", "WhatsApp is already open, proceeding with scan")
-            if (isChatsTab(rootNode)) {
-                autoScanChatList(rootNode)
-            } else {
-                Log.d("WhatsAppMonitor", "Not on Chats tab, waiting for tab switch")
-            }
-        } else {
-            Log.d("WhatsAppMonitor", "WhatsApp is not active, launching it")
-            launchWhatsApp()
-        }
+        // Wait for manual WhatsApp opening; no automatic launch
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         Log.d("WhatsAppMonitor", "Event received: ${event?.eventType}")
         event?.let {
-            if (it.packageName == "com.whatsapp" && !isScanning && (System.currentTimeMillis() - lastScanTime > scanCooldown)) {
+            if (WHATSAPP_PACKAGES.contains(it.packageName) && !isScanning && (System.currentTimeMillis() - lastScanTime > scanCooldown)) {
                 val rootNode = rootInActiveWindow
                 if (rootNode != null) {
                     Log.d("WhatsAppMonitor", "Root node found: ${rootNode.className}")
                     dumpNodeInfo(rootNode)
                     if (isChatsTab(rootNode)) {
-                        Log.d("WhatsAppMonitor", "Chats tab detected, starting auto-scan")
+                        Log.d("WhatsAppMonitor", "Chats tab detected in ${it.packageName}, starting auto-scan")
                         autoScanChatList(rootNode)
                         lastScanTime = System.currentTimeMillis()
                     } else {
-                        Log.d("WhatsAppMonitor", "Not Chats tab")
+                        Log.d("WhatsAppMonitor", "Not on Chats tab in ${it.packageName}")
                     }
                 } else {
-                    Log.d("WhatsAppMonitor", "No root node, WhatsApp might be in background")
+                    Log.d("WhatsAppMonitor", "No root node, ${it.packageName} might be in background")
                 }
             }
         }
     }
 
     private fun isChatsTab(rootNode: AccessibilityNodeInfo): Boolean {
-        val contactRows = rootNode.findAccessibilityNodeInfosByViewId("com.whatsapp:id/contact_row_container")
-        val chatList = rootNode.findAccessibilityNodeInfosByViewId("com.whatsapp:id/chat_list")
-        val conversations = rootNode.findAccessibilityNodeInfosByViewId("com.whatsapp:id/conversations")
+        val contactRows = rootNode.findAccessibilityNodeInfosByViewId("${rootNode.packageName}:id/contact_row_container")
+        val chatList = rootNode.findAccessibilityNodeInfosByViewId("${rootNode.packageName}:id/chat_list")
+        val conversations = rootNode.findAccessibilityNodeInfosByViewId("${rootNode.packageName}:id/conversations")
         val tabIndicator = rootNode.findAccessibilityNodeInfosByText("Chats")
-        
+
         Log.d("WhatsAppMonitor", "ContactRows: ${contactRows.size}, ChatList: ${chatList.size}, " +
                 "Conversations: ${conversations.size}, ChatsTab: ${tabIndicator.size}")
-        
+
         return contactRows.isNotEmpty() || chatList.isNotEmpty() || conversations.isNotEmpty() || tabIndicator.isNotEmpty()
     }
 
     private fun autoScanChatList(rootNode: AccessibilityNodeInfo) {
         isScanning = true
         val numbers = mutableListOf<String>()
-        
+
         Log.d("WhatsAppMonitor", "Initial scan of Chats tab")
         findPhoneNumbers(rootNode, numbers)
         sendNumbers(numbers)
@@ -137,8 +120,8 @@ class WhatsAppMonitorService : AccessibilityService() {
                 return node
             }
             val chatListIds = listOf(
-                "com.whatsapp:id/chat_list",
-                "com.whatsapp:id/conversations"
+                "${rootNode.packageName}:id/chat_list",
+                "${rootNode.packageName}:id/conversations"
             )
             for (id in chatListIds) {
                 val nodes = node.findAccessibilityNodeInfosByViewId(id)
@@ -203,19 +186,6 @@ class WhatsAppMonitorService : AccessibilityService() {
             )
             Log.d("WhatsAppMonitor", "Sending number: $data")
             channel?.invokeMethod("onUIEvent", Gson().toJson(data))
-        }
-    }
-
-    private fun launchWhatsApp() {
-        val intent = Intent(Intent.ACTION_MAIN)
-        intent.component = ComponentName("com.whatsapp", "com.whatsapp.Main")
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        try {
-            startActivity(intent)
-            Log.d("WhatsAppMonitor", "Launched WhatsApp")
-        } catch (e: Exception) {
-            Log.e("WhatsAppMonitor", "Failed to launch WhatsApp: ${e.message}")
-            disableService()
         }
     }
 
