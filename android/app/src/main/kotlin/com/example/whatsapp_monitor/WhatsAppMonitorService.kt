@@ -12,15 +12,15 @@ import android.os.Looper
 class WhatsAppMonitorService : AccessibilityService() {
     companion object {
         var channel: MethodChannel? = null
-        private val WHATSAPP_PACKAGES = listOf("com.whatsapp", "com.whatsapp.w4b") // Regular and Business WhatsApp
+        private val WHATSAPP_PACKAGES = listOf("com.whatsapp", "com.whatsapp.w4b")
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var isScanning = false
     private var lastScanTime = 0L
-    private val scanCooldown = 5000L // 5 seconds cooldown
+    private val scanCooldown = 5000L
     private var consecutiveScrollFails = 0
-    private val maxConsecutiveFails = 10 // Stop after 10 consecutive failures
+    private val maxConsecutiveFails = 10
 
     override fun onServiceConnected() {
         Log.d("WhatsAppMonitor", "Service connected")
@@ -135,7 +135,6 @@ class WhatsAppMonitorService : AccessibilityService() {
     private fun findChatEntries(node: AccessibilityNodeInfo, entries: MutableList<String>) {
         val text = node.text?.toString()?.trim()
         if (!text.isNullOrEmpty() && text.isNotBlank() && !text.contains("\n") && text.length > 1) {
-            // Filter out irrelevant text (e.g., timestamps, message previews)
             val isContactRow = node.viewIdResourceName?.contains("contact_row_container") == true
             if (isContactRow || (!isPhoneNumber(text) && text.length < 20) || isPhoneNumber(text)) {
                 if (!entries.contains(text)) {
@@ -168,7 +167,13 @@ class WhatsAppMonitorService : AccessibilityService() {
                 "source" to "ChatList"
             )
             Log.d("WhatsAppMonitor", "Sending entry: $data")
-            channel?.invokeMethod("onUIEvent", Gson().toJson(data))
+            handler.post {
+                try {
+                    channel?.invokeMethod("onUIEvent", Gson().toJson(data))
+                } catch (e: Exception) {
+                    Log.e("WhatsAppMonitor", "Error sending to Flutter: ${e.message}")
+                }
+            }
         }
     }
 

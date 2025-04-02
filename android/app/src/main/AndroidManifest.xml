@@ -3,6 +3,7 @@
     package="com.example.whatsapp_monitor">
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"/>
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="ecommex_one"
         android:name="${applicationName}"

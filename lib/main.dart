@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const WhatsAppMonitorApp());
@@ -30,8 +31,9 @@ class WhatsAppMobileMonitor extends StatefulWidget {
 class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   static const MethodChannel _channel = MethodChannel('com.example.whatsapp_monitor/accessibility');
   static const MethodChannel _contactsChannel = MethodChannel('com.example.whatsapp_monitor/contacts');
-  List<Map<String, String>> savedContacts = []; // Phone contacts with name and number
-  List<Map<String, String>> messagedContacts = []; // All messaged contacts (saved and unsaved)
+  static const String apiUrl = 'http://test-server:3008/api/contacts'; // Replace with your server IP
+  List<Map<String, String>> savedContacts = [];
+  List<Map<String, String>> messagedContacts = [];
   bool isMonitoring = false;
 
   @override
@@ -78,29 +80,30 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
           final eventData = jsonDecode(call.arguments as String) as Map<String, dynamic>;
           final text = eventData['text'] ?? '';
           if (text.isNotEmpty && !messagedContacts.any((c) => c['number'] == text || c['name'] == text)) {
+            Map<String, String> newContact = {'name': 'Unknown', 'number': 'Not Available'};
             setState(() {
               if (_isPhoneNumber(text)) {
-                // Unsaved contact (phone number visible)
                 final savedMatch = savedContacts.firstWhere(
                   (c) => c['number'] == text,
                   orElse: () => {'name': 'Unknown', 'number': text},
                 );
-                messagedContacts.add({
+                newContact = {
                   'name': savedMatch['name']!,
                   'number': text,
-                });
+                };
               } else {
-                // Saved contact (name visible)
                 final savedMatch = savedContacts.firstWhere(
                   (c) => c['name'] == text,
                   orElse: () => {'name': text, 'number': 'Not Available'},
                 );
-                messagedContacts.add({
+                newContact = {
                   'name': text,
                   'number': savedMatch['number']!,
-                });
+                };
               }
+              messagedContacts.add(newContact);
             });
+            await _sendContactToApi(newContact);
           }
         } catch (e) {
           print('Error parsing event: $e');
@@ -108,6 +111,27 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       }
       return null;
     });
+  }
+
+  Future<void> _sendContactToApi(Map<String, String> contact) async {
+    try {
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'contacts': [contact]}),
+      );
+      
+      if (response.statusCode == 200) {
+        print('Contact saved to server: ${contact['name']}');
+      } else {
+        print('Failed to save contact: ${response.body}');
+      }
+    } catch (e) {
+      print('Error sending contact to API: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Network error: Failed to save contact')),
+      );
+    }
   }
 
   void _showAccessibilityPrompt() {
@@ -162,7 +186,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   @override
   Widget build(BuildContext context) {
-    // Filter out contacts where the number is "Not Available"
     final filteredMessagedContacts = messagedContacts.where((contact) => contact['number'] != 'Not Available').toList();
 
     return Scaffold(
