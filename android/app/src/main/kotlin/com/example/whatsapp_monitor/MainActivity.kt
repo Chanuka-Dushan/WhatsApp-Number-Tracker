@@ -15,25 +15,45 @@ import androidx.core.content.ContextCompat
 class MainActivity : FlutterActivity() {
     private val ACCESSIBILITY_CHANNEL = "com.example.whatsapp_monitor/accessibility"
     private val CONTACTS_CHANNEL = "com.example.whatsapp_monitor/contacts"
+    private val OVERLAY_PERMISSION_REQUEST_CODE = 1001
+    private val CONTACTS_PERMISSION_REQUEST_CODE = 1002
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        Log.d("MainActivity", "Configuring Flutter engine")
+        
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ACCESSIBILITY_CHANNEL).apply {
             WhatsAppMonitorService.channel = this
+            FloatingButtonService.channel = this
             setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startMonitoring" -> {
-                        Log.d("WhatsAppMonitor", "Starting monitoring")
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        startActivity(intent)
-                        result.success("enabled")
-                    }
                     "openAccessibilitySettings" -> {
+                        Log.d("MainActivity", "Opening accessibility settings")
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         result.success(null)
                     }
-                    else -> result.notImplemented()
+                    "startMonitoring" -> {
+                        val label = call.argument<String>("label") ?: ""
+                        Log.d("MainActivity", "Starting monitoring with label: $label")
+                        if (Settings.canDrawOverlays(this@MainActivity)) {
+                            WhatsAppMonitorService.startMonitoring(label)
+                            startService(Intent(this@MainActivity, FloatingButtonService::class.java))
+                            result.success(true)
+                        } else {
+                            Log.d("MainActivity", "Overlay permission not granted")
+                            result.error("PERMISSION_DENIED", "Overlay permission required", null)
+                        }
+                    }
+                    "stopMonitoring" -> {
+                        Log.d("MainActivity", "Stopping monitoring")
+                        WhatsAppMonitorService.stopMonitoring()
+                        stopService(Intent(this@MainActivity, FloatingButtonService::class.java))
+                        result.success(true)
+                    }
+                    else -> {
+                        result.notImplemented()
+                    }
                 }
             }
         }
@@ -44,10 +64,28 @@ class MainActivity : FlutterActivity() {
                     val contacts = getPhoneContacts()
                     result.success(contacts)
                 } else {
+                    requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), CONTACTS_PERMISSION_REQUEST_CODE)
                     result.error("PERMISSION_DENIED", "Contacts permission not granted", null)
                 }
             } else {
                 result.notImplemented()
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            CONTACTS_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    Log.d("MainActivity", "Contacts permission granted")
+                } else {
+                    Log.d("MainActivity", "Contacts permission denied")
+                }
             }
         }
     }

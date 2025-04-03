@@ -13,6 +13,22 @@ class WhatsAppMonitorService : AccessibilityService() {
     companion object {
         var channel: MethodChannel? = null
         private val WHATSAPP_PACKAGES = listOf("com.whatsapp", "com.whatsapp.w4b")
+        private var isMonitoring = false
+        private var currentLabel: String = ""
+        
+        fun startMonitoring(label: String) {
+            isMonitoring = true
+            currentLabel = label
+            Log.d("WhatsAppMonitor", "Monitoring started with label: $label")
+        }
+        
+        fun stopMonitoring() {
+            isMonitoring = false
+            currentLabel = ""
+            Log.d("WhatsAppMonitor", "Monitoring stopped")
+        }
+        
+        fun isMonitoringActive(): Boolean = isMonitoring
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -27,19 +43,16 @@ class WhatsAppMonitorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        Log.d("WhatsAppMonitor", "Event received: ${event?.eventType}")
         event?.let {
-            if (WHATSAPP_PACKAGES.contains(it.packageName) && !isScanning && (System.currentTimeMillis() - lastScanTime > scanCooldown)) {
+            if (WHATSAPP_PACKAGES.contains(it.packageName) && isMonitoringActive() && !isScanning && 
+                (System.currentTimeMillis() - lastScanTime > scanCooldown)) {
                 val rootNode = rootInActiveWindow
                 if (rootNode != null) {
                     Log.d("WhatsAppMonitor", "Root node found: ${rootNode.className}")
-                    dumpNodeInfo(rootNode)
                     if (isChatsTab(rootNode)) {
                         Log.d("WhatsAppMonitor", "Chats tab detected in ${it.packageName}, starting auto-scan")
                         autoScanChatList(rootNode)
                         lastScanTime = System.currentTimeMillis()
-                    } else {
-                        Log.d("WhatsAppMonitor", "Not on Chats tab in ${it.packageName}")
                     }
                 }
             }
@@ -68,10 +81,16 @@ class WhatsAppMonitorService : AccessibilityService() {
             val maxScrollAttempts = 100
 
             override fun run() {
+                if (!isMonitoring) {
+                    Log.d("WhatsAppMonitor", "Monitoring stopped during scan")
+                    isScanning = false
+                    return
+                }
+
                 val scrollableNode = findChatListScrollableNode(rootNode)
                 if (scrollableNode == null) {
                     Log.d("WhatsAppMonitor", "No scrollable chat list found")
-                    disableService()
+                    isScanning = false
                     return
                 }
 
@@ -91,14 +110,14 @@ class WhatsAppMonitorService : AccessibilityService() {
                     consecutiveScrollFails++
                     if (consecutiveScrollFails >= maxConsecutiveFails) {
                         Log.d("WhatsAppMonitor", "Detected end of chat list")
-                        disableService()
+                        isScanning = false
                         return
                     }
                     scrollAttempts++
                     handler.postDelayed(this, 1000)
                 } else {
                     Log.d("WhatsAppMonitor", "Chat list scan completed")
-                    disableService()
+                    isScanning = false
                 }
             }
         }, 2000)
@@ -164,7 +183,8 @@ class WhatsAppMonitorService : AccessibilityService() {
                 "text" to entry,
                 "eventType" to "AutoScan",
                 "timestamp" to System.currentTimeMillis().toString(),
-                "source" to "ChatList"
+                "source" to "ChatList",
+                "label" to currentLabel
             )
             Log.d("WhatsAppMonitor", "Sending entry: $data")
             handler.post {
@@ -175,15 +195,6 @@ class WhatsAppMonitorService : AccessibilityService() {
                 }
             }
         }
-    }
-
-    private fun disableService() {
-        isScanning = false
-        disableSelf()
-    }
-
-    private fun dumpNodeInfo(node: AccessibilityNodeInfo) {
-        Log.d("WhatsAppMonitor", "Node class: ${node.className}, ID: ${node.viewIdResourceName}, Child count: ${node.childCount}")
     }
 
     override fun onInterrupt() {
