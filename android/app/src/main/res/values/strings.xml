@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">whatsapp_monitor</string>
-    <string name="accessibility_service_description"> </string>
+    <string name="accessibility_service_description">Powered by Ecommex </string>
 </resources>

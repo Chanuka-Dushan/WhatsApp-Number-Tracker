@@ -68,60 +68,62 @@ class WhatsAppMonitorService : AccessibilityService() {
         return contactRows.isNotEmpty() || chatList.isNotEmpty() || conversations.isNotEmpty() || tabIndicator.isNotEmpty()
     }
 
-    private fun autoScanChatList(rootNode: AccessibilityNodeInfo) {
-        isScanning = true
-        val chatEntries = mutableListOf<String>()
-        
-        Log.d("WhatsAppMonitor", "Initial scan of Chats tab")
-        findChatEntries(rootNode, chatEntries)
-        sendChatEntries(chatEntries)
+private fun autoScanChatList(rootNode: AccessibilityNodeInfo) {
+    isScanning = true
+    val chatEntries = mutableListOf<String>()
+    
+    Log.d("WhatsAppMonitor", "Initial scan of Chats tab")
+    findChatEntries(rootNode, chatEntries)
+    sendChatEntries(chatEntries)
 
-        handler.postDelayed(object : Runnable {
-            var scrollAttempts = 0
-            val maxScrollAttempts = 100
+    val runnable = object : Runnable {
+        var scrollAttempts = 0
+        val maxScrollAttempts = 100
 
-            override fun run() {
-                if (!isMonitoring) {
-                    Log.d("WhatsAppMonitor", "Monitoring stopped during scan")
-                    isScanning = false
-                    return
-                }
-
-                val scrollableNode = findChatListScrollableNode(rootNode)
-                if (scrollableNode == null) {
-                    Log.d("WhatsAppMonitor", "No scrollable chat list found")
-                    isScanning = false
-                    return
-                }
-
-                scrollableNode.refresh()
-                if (!scrollableNode.isFocused) {
-                    scrollableNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                }
-
-                if (scrollAttempts < maxScrollAttempts && performScroll(scrollableNode)) {
-                    consecutiveScrollFails = 0
-                    val newEntries = mutableListOf<String>()
-                    findChatEntries(rootNode, newEntries)
-                    sendChatEntries(newEntries)
-                    scrollAttempts++
-                    handler.postDelayed(this, 500)
-                } else if (scrollAttempts < maxScrollAttempts) {
-                    consecutiveScrollFails++
-                    if (consecutiveScrollFails >= maxConsecutiveFails) {
-                        Log.d("WhatsAppMonitor", "Detected end of chat list")
-                        isScanning = false
-                        return
-                    }
-                    scrollAttempts++
-                    handler.postDelayed(this, 1000)
-                } else {
-                    Log.d("WhatsAppMonitor", "Chat list scan completed")
-                    isScanning = false
-                }
+        override fun run() {
+            if (!isMonitoring) {
+                Log.d("WhatsAppMonitor", "Monitoring stopped during scan")
+                isScanning = false
+                handler.removeCallbacks(this) // Remove pending callbacks
+                return
             }
-        }, 2000)
+
+            val scrollableNode = findChatListScrollableNode(rootNode)
+            if (scrollableNode == null) {
+                Log.d("WhatsAppMonitor", "No scrollable chat list found")
+                isScanning = false
+                return
+            }
+
+            scrollableNode.refresh()
+            if (!scrollableNode.isFocused) {
+                scrollableNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            }
+
+            if (scrollAttempts < maxScrollAttempts && performScroll(scrollableNode)) {
+                consecutiveScrollFails = 0
+                val newEntries = mutableListOf<String>()
+                findChatEntries(rootNode, newEntries)
+                sendChatEntries(newEntries)
+                scrollAttempts++
+                handler.postDelayed(this, 500)
+            } else if (scrollAttempts < maxScrollAttempts) {
+                consecutiveScrollFails++
+                if (consecutiveScrollFails >= maxConsecutiveFails) {
+                    Log.d("WhatsAppMonitor", "Detected end of chat list")
+                    isScanning = false
+                    return
+                }
+                scrollAttempts++
+                handler.postDelayed(this, 1000)
+            } else {
+                Log.d("WhatsAppMonitor", "Chat list scan completed")
+                isScanning = false
+            }
+        }
     }
+    handler.postDelayed(runnable, 2000)
+}
 
     private fun findChatListScrollableNode(rootNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         fun searchScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {

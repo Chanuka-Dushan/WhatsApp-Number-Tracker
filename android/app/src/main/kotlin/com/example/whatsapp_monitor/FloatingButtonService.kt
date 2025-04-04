@@ -98,6 +98,7 @@ class FloatingButtonService : Service() {
             handler.post {
                 channel?.invokeMethod("requestStartMonitoring", null)
             }
+            
         }
     }
 
