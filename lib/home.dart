@@ -1,10 +1,16 @@
+import 'dart:ffi';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
+import 'dart:io';
+import 'package:csv/csv.dart';
+import 'package:path_provider/path_provider.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 
 void main() {
   runApp(const WhatsAppMonitorApp());
@@ -31,8 +37,10 @@ class WhatsAppMobileMonitor extends StatefulWidget {
 }
 
 class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
-  static const MethodChannel _channel = MethodChannel('com.example.whatsapp_monitor/accessibility');
-  static const MethodChannel _contactsChannel = MethodChannel('com.example.whatsapp_monitor/contacts');
+  static const MethodChannel _channel =
+      MethodChannel('com.example.whatsapp_monitor/accessibility');
+  static const MethodChannel _contactsChannel =
+      MethodChannel('com.example.whatsapp_monitor/contacts');
   static const String apiUrl = 'http://test-server:3008/api/contacts';
 
   List<Map<String, dynamic>> savedContacts = [];
@@ -47,7 +55,8 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   String? userId;
   String? storeId;
-  StreamController<bool> _monitoringStatusController = StreamController<bool>.broadcast();
+  final StreamController<bool> _monitoringStatusController =
+      StreamController<bool>.broadcast();
 
   @override
   void initState() {
@@ -63,32 +72,43 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     super.dispose();
   }
 
-  Future<void> _loadUserAndStoreId() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      userId = prefs.getString('user_id');
-      storeId = prefs.getString('store_id');
-    });
-  }
+ Future<void> _loadUserAndStoreId() async {
+  final prefs = await SharedPreferences.getInstance();
+  setState(() {
+    userId = prefs.getInt('user_id')?.toString() ?? 'Unknown'; // Convert int to String, fallback to 'Unknown'
+    storeId = prefs.getString('store_id') ?? 'Unknown'; // Already a String, fallback to 'Unknown'
+  });
+  print('userId: $userId');
+  print('storeId: $storeId');
+}
 
   Future<void> _checkAndRequestPermissions() async {
-    final status = await Permission.systemAlertWindow.request();
-    if (!status.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Overlay permission is required for floating button'))
-      );
-    }
-    
-    final contactsStatus = await Permission.contacts.request();
-    if (contactsStatus.isGranted) {
-      await _getTotalContactCount();
-      _loadAllContacts();
+    final deviceInfo = DeviceInfoPlugin();
+    final androidInfo = await deviceInfo.androidInfo;
+    final sdkVersion = androidInfo.version.sdkInt;
+
+    if (sdkVersion >= 33) {
+      await [Permission.storage, Permission.photos].request();
+    } else if (sdkVersion >= 30) {
+      if (await Permission.manageExternalStorage.isDenied) {
+        await Permission.manageExternalStorage.request();
+      }
+      await Permission.storage.request();
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Contacts permission is required'))
-      );
+      await Permission.storage.request();
     }
-    
+
+    if (await Permission.storage.isDenied &&
+        await Permission.manageExternalStorage.isDenied &&
+        sdkVersion < 33) {
+      _showError('Storage permission is required to export files.');
+      return;
+    }
+
+    await Permission.systemAlertWindow.request();
+    await Permission.contacts.request();
+    await _getTotalContactCount();
+    await _loadAllContacts();
     _showAccessibilityPrompt();
   }
 
@@ -117,25 +137,31 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     try {
       final eventData = jsonDecode(arguments as String) as Map<String, dynamic>;
       final text = eventData['text']?.toString() ?? '';
-      
-      if (text.isNotEmpty && isMonitoring && !_contactExists(text)) {
-        final newContact = _createContactFromEvent(text, eventData);
-        
-        setState(() => messagedContacts.add(newContact));
-        _sendContactToApi(newContact);
+
+      if (text.isNotEmpty && isMonitoring) {
+        final index = messagedContacts.indexWhere((c) => c['number'] == text);
+        if (index != -1) {
+          final labels =
+              List<String>.from(messagedContacts[index]['labels'] ?? []);
+          if (!labels.contains(currentLabel)) {
+            labels.add(currentLabel);
+          }
+          setState(() {
+            messagedContacts[index]['labels'] = labels;
+          });
+        } else {
+          final newContact = _createContactFromEvent(text, eventData);
+          newContact['labels'] = [currentLabel];
+          setState(() => messagedContacts.add(newContact));
+        }
       }
     } catch (e) {
       print('Error handling UI event: $e');
     }
   }
 
-  bool _contactExists(String text) {
-    return messagedContacts.any((c) => 
-      c['number'] == text || c['name'] == text
-    );
-  }
-
-  Map<String, dynamic> _createContactFromEvent(String text, Map<String, dynamic> eventData) {
+  Map<String, dynamic> _createContactFromEvent(
+      String text, Map<String, dynamic> eventData) {
     if (_isPhoneNumber(text)) {
       final savedMatch = savedContacts.firstWhere(
         (c) => c['number'] == text,
@@ -175,22 +201,23 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
           onChanged: (value) => currentLabel = value,
         ),
         actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, currentLabel),
-          child: const Text('Start', style: TextStyle(color: Colors.green)),
-        ), // Added closing parenthesis here
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel', style: TextStyle(color: Colors.red)),
-        ),
-      ],
+          TextButton(
+            onPressed: () => Navigator.pop(context, currentLabel),
+            child: const Text('Start', style: TextStyle(color: Colors.green)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
 
     if (label == null || label.isEmpty) return;
 
     try {
-      final result = await _channel.invokeMethod<bool>('startMonitoring', {'label': label});
+      final result = await _channel
+          .invokeMethod<bool>('startMonitoring', {'label': label});
       if (result == true) {
         setState(() {
           currentLabel = label;
@@ -221,10 +248,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-      )
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 
@@ -236,8 +260,8 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       'number': contact['number'],
       'label': contact['label'],
       'timestamp': contact['timestamp'],
-      'user_id': userId,
-      'store_id': storeId,
+      'store_id': storeId?.toString() ?? 'Unknown',
+      'user_id': userId?.toString() ?? 'Unknown',
       'list_length': messagedContacts.length,
       'list_capacity': totalContactCount ?? 0,
     };
@@ -263,9 +287,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       builder: (context) => AlertDialog(
         title: const Text('Enable Accessibility Service'),
         content: const Text(
-          'Please enable the WhatsApp Monitor Service in Accessibility Settings '
-          'for the app to function properly.'
-        ),
+            'Please enable the WhatsApp Monitor Service in Accessibility Settings for the app to function properly.'),
         actions: [
           TextButton(
             onPressed: () {
@@ -285,7 +307,8 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   Future<void> _getTotalContactCount() async {
     try {
-      final count = await _contactsChannel.invokeMethod<int>('getTotalContactCount');
+      final count =
+          await _contactsChannel.invokeMethod<int>('getTotalContactCount');
       setState(() => totalContactCount = count);
     } on PlatformException catch (e) {
       _showError('Failed to get contact count: ${e.message}');
@@ -302,17 +325,18 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
           'getPhoneContacts',
           {'offset': contactOffset, 'limit': contactLimit},
         );
-        
+
         if (contacts == null || contacts.isEmpty) break;
-        
+
         setState(() {
-          savedContacts.addAll(contacts.map((c) => Map<String, dynamic>.from(c)));
+          savedContacts
+              .addAll(contacts.map((c) => Map<String, dynamic>.from(c)));
           contactOffset += contactLimit;
         });
-        
+
         if (contacts.length < contactLimit) break;
       }
-      
+
       setState(() {
         isLoadingContacts = false;
         allContactsLoaded = true;
@@ -327,6 +351,120 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     final phoneRegex = RegExp(r'^\+?[0-9]{6,14}$');
     final cleanedText = text.replaceAll(RegExp(r'[\s\-\.\(\)]'), '');
     return phoneRegex.hasMatch(cleanedText);
+  }
+
+  Future<void> _exportContactsToCsv() async {
+    final deviceInfo = DeviceInfoPlugin();
+    final androidInfo = await deviceInfo.androidInfo;
+    final sdkVersion = androidInfo.version.sdkInt;
+
+    bool hasPermission = false;
+    if (sdkVersion >= 33) {
+      hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
+      if (!hasPermission) {
+        await [Permission.photos, Permission.storage].request();
+        hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
+      }
+    } else if (sdkVersion >= 30) {
+      hasPermission = await Permission.manageExternalStorage.isGranted;
+      if (!hasPermission) {
+        await Permission.manageExternalStorage.request();
+        hasPermission = await Permission.manageExternalStorage.isGranted;
+      }
+      if (!hasPermission) {
+        await Permission.storage.request();
+        hasPermission = await Permission.storage.isGranted;
+      }
+    } else {
+      hasPermission = await Permission.storage.isGranted;
+      if (!hasPermission) {
+        await Permission.storage.request();
+        hasPermission = await Permission.storage.isGranted;
+      }
+    }
+
+    if (!hasPermission) {
+      _showError('Storage permission denied. Cannot export CSV.');
+      return;
+    }
+
+    // Step 1: Filter and merge contacts
+    List<Map<String, dynamic>> filteredContacts = messagedContacts
+        .where((c) => c['number'] != 'Not Available')
+        .toList();
+
+    Map<String, Map<String, dynamic>> mergedContactsMap = {};
+
+    for (var contact in filteredContacts) {
+      final number = contact['number'];
+      final name = contact['name'];
+      final labels = List<String>.from(contact['labels'] ?? [contact['label']]);
+
+      if (!mergedContactsMap.containsKey(number)) {
+        mergedContactsMap[number] = {
+          'store_id': storeId, // Use fetched storeId
+          'user_id': userId,   // Add fetched userId
+          'name': name,
+          'number': number,
+          'labels': labels.toSet(),
+        };
+      } else {
+        mergedContactsMap[number]!['labels'].addAll(labels);
+      }
+    }
+
+    // Step 2: Prepare rows for CSV
+    List<List<String>> rows = [
+      ['store_id', 'user_id', 'name', 'phonenumber', 'label'] // Updated header
+    ];
+
+    for (var entry in mergedContactsMap.entries) {
+      final contact = entry.value;
+      final labelString = (contact['labels'] as Set<String>).join(', ');
+      rows.add([
+        contact['store_id'] ?? 'Unknown', // Fallback if null
+        contact['user_id'] ?? 'Unknown',  // Fallback if null
+        contact['name'],
+        contact['number'],
+        labelString,
+      ]);
+    }
+
+    String csvData = const ListToCsvConverter().convert(rows);
+
+    // Step 3: Save file
+    Directory? downloadsDir;
+    try {
+      if (Platform.isAndroid) {
+        downloadsDir = Directory('/storage/emulated/0/Download');
+        if (!await downloadsDir.exists()) {
+          downloadsDir = await getExternalStorageDirectory();
+        }
+      } else if (Platform.isIOS) {
+        downloadsDir = await getApplicationDocumentsDirectory();
+      }
+    } catch (e) {
+      print('Error getting directory: $e');
+      downloadsDir = await getApplicationDocumentsDirectory();
+    }
+
+    if (downloadsDir == null) {
+      _showError('Could not access storage directory.');
+      return;
+    }
+
+    await downloadsDir.create(recursive: true);
+
+    final timestamp =
+        DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+    final path = '${downloadsDir.path}/whatsapp_contacts_$timestamp.csv';
+    final file = File(path);
+
+    await file.writeAsString(csvData);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Contacts exported to $path')),
+    );
   }
 
   @override
@@ -349,13 +487,19 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       );
     }
 
-    final filteredContacts = messagedContacts.where((c) => c['number'] != 'Not Available').toList();
+    final filteredContacts =
+        messagedContacts.where((c) => c['number'] != 'Not Available').toList();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('WhatsApp Message Tracker'),
         backgroundColor: Colors.green,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.download),
+            onPressed: _exportContactsToCsv,
+            tooltip: 'Export as CSV',
+          ),
           StreamBuilder<bool>(
             stream: _monitoringStatusController.stream,
             initialData: isMonitoring,
@@ -363,7 +507,8 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
               return IconButton(
                 icon: Icon(snapshot.data! ? Icons.stop : Icons.play_arrow),
                 onPressed: snapshot.data! ? _stopMonitoring : _startMonitoring,
-                tooltip: snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
+                tooltip:
+                    snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
               );
             },
           ),
@@ -373,81 +518,13 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Monitoring Status:',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    StreamBuilder<bool>(
-                      stream: _monitoringStatusController.stream,
-                      initialData: isMonitoring,
-                      builder: (context, snapshot) {
-                        return Text(
-                          snapshot.data! 
-                            ? 'ACTIVE (${currentLabel.toUpperCase()})' 
-                            : 'INACTIVE',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: snapshot.data! ? Colors.green : Colors.red,
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.play_arrow),
-                          label: const Text('Start'),
-                          onPressed: isMonitoring ? null : _startMonitoring,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.stop),
-                          label: const Text('Stop'),
-                          onPressed: isMonitoring ? _stopMonitoring : null,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Messaged Contacts:',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: filteredContacts.length,
-                      itemBuilder: (context, index) {
-                        final contact = filteredContacts[index];
-                        return ContactCard(contact: contact);
-                      },
-                    ),
-                  ),
-                ],
+              child: ListView.builder(
+                itemCount: filteredContacts.length,
+                itemBuilder: (context, index) {
+                  final contact = filteredContacts[index];
+                  return ContactCard(contact: contact);
+                },
               ),
             ),
           ],
@@ -464,30 +541,24 @@ class ContactCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final labels = (contact['labels'] ?? [contact['label']]).join(', ');
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: ListTile(
         title: Text(
-          contact['name']!,
+          contact['name'] ?? '',
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(contact['number']!),
+            Text(contact['number'] ?? ''),
             const SizedBox(height: 4),
-            Row(
-              children: [
-                Chip(
-                  label: Text(contact['label'] ?? 'None'),
-                  backgroundColor: Colors.green[100],
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  contact['timestamp']?.split('.')[0] ?? '',
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ],
+            Text('Labels: $labels'),
+            const SizedBox(height: 4),
+            Text(
+              contact['timestamp']?.split('.')[0] ?? '',
+              style: const TextStyle(fontSize: 12),
             ),
           ],
         ),

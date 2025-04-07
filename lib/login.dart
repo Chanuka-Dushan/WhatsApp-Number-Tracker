@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whatsapp_monitor/home.dart';
 
-
 class LoginPage extends StatefulWidget {
   @override
   _LoginPageState createState() => _LoginPageState();
@@ -83,7 +82,7 @@ class _LoginPageState extends State<LoginPage> {
 
         await prefs.setString('token', data['token']);
         await prefs.setInt('user_id', data['user']['id']);
-        await prefs.setInt('store_id', data['user']['store_id']);
+        await prefs.setString('store_id', data['user']['store_id'].toString()); // Changed to String
         await prefs.setString('username', data['user']['username']);
         await prefs.setString('sub_end', data['user']['subscription'][0]['end']);
 
@@ -95,8 +94,6 @@ class _LoginPageState extends State<LoginPage> {
         } else {
           await prefs.remove('password');
         }
-
-        
 
         // Parse subscription end date (fixed for 'yyyy-MM-dd' format)
         String rawDate = data['user']['subscription'][0]['end'];
@@ -121,17 +118,10 @@ class _LoginPageState extends State<LoginPage> {
         await prefs.setInt('remaining_days', remainingDays);
         print("Remaining days until subscription ends: $remainingDays");
 
-        if (remainingDays >= 0) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => WhatsAppMonitorApp()),
-          );
-        } else {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => WhatsAppMonitorApp()),
-          );
-        }
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => WhatsAppMonitorApp()),
+        );
       } else {
         _showErrorDialog('Server Error: ${response.statusCode} - ${response.body}');
       }
@@ -142,14 +132,13 @@ class _LoginPageState extends State<LoginPage> {
       if (e.toString().contains('No internet')) {
         errorMessage = 'No internet connection. Please connect and try again.';
       } else if (e.toString().contains('timed out')) {
-        errorMessage = 'Something went wrong.please try again in a few minutes.';
+        errorMessage = 'Something went wrong. Please try again in a few minutes.';
       }
       _showErrorDialog(errorMessage);
     } finally {
       setState(() { _isLoading = false; });
     }
   }
-
 
   void _showErrorDialog(String message) {
     showDialog(

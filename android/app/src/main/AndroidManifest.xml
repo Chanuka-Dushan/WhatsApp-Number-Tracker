@@ -4,11 +4,20 @@
 
     <!-- Required permissions -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                     android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+                     android:minSdkVersion="30" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
+
     <!-- For Android 11+ package visibility -->
     <queries>
         <package android:name="com.whatsapp" />
@@ -21,8 +30,8 @@
 
     <application
         android:label="WhatsApp Message Tracker"
-        android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true">
 
         <activity
@@ -47,18 +56,16 @@
             android:name=".FloatingButtonService"
             android:enabled="true"
             android:exported="false"
-            android:permission="android.permission.SYSTEM_ALERT_WINDOW">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-            </intent-filter>
-        </service>
+            android:foregroundServiceType="dataSync"
+            android:permission="android.permission.SYSTEM_ALERT_WINDOW" />
 
         <!-- Accessibility Service -->
         <service
             android:name=".WhatsAppMonitorService"
             android:label="WhatsApp Monitor"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
+            android:exported="true"
+            android:foregroundServiceType="dataSync">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>

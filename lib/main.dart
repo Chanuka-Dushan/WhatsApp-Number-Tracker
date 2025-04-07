@@ -2,9 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
-
-// Assuming these are your actual files; adjust as needed
-import 'package:whatsapp_monitor/home.dart'; // Ensure WhatsAppMonitorApp is defined here
+import 'package:whatsapp_monitor/home.dart';
 import 'package:whatsapp_monitor/login.dart';
 
 class LoginStatus with ChangeNotifier {
@@ -19,7 +17,7 @@ class LoginStatus with ChangeNotifier {
 }
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key}); // Added key parameter for consistency
+  const SplashScreen({super.key});
 
   @override
   _SplashScreenState createState() => _SplashScreenState();
@@ -34,40 +32,26 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _checkLoginStatus() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? token = prefs.getString('token');
-    int? remainingDays = prefs.getInt('remaining_days');
-    int? userId = prefs.getInt('user_id'); // Moved inside the method
+    String? storeId = prefs.getString('store_id');
 
     // Simulate a splash screen delay
     await Future.delayed(const Duration(seconds: 2));
 
-    if (token != null && token.isNotEmpty && remainingDays != null) {
-      if (remainingDays >= 0) {
-        // User is logged in and subscription is valid
-        Provider.of<LoginStatus>(context, listen: false).isLoggedIn = true;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const WhatsAppMonitorApp()), // Assuming this is your home screen
-        );
-      } else {
-        // Subscription expired, still navigate to WhatsAppMonitorApp but logged out
-        Provider.of<LoginStatus>(context, listen: false).isLoggedIn = false;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const WhatsAppMonitorApp()), // Could redirect to a "Not Authorized" page instead
-        );
-      }
+    if (storeId != null && storeId.isNotEmpty) {
+      // Store ID exists, go to WhatsAppMonitorApp
+      Provider.of<LoginStatus>(context, listen: false).isLoggedIn = true;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const WhatsAppMonitorApp()),
+      );
     } else {
-      // No valid token, go to LoginPage
+      // No store ID, go to LoginPage
       Provider.of<LoginStatus>(context, listen: false).isLoggedIn = false;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) =>  LoginPage()),
+        MaterialPageRoute(builder: (context) => LoginPage()),
       );
     }
-
-    // Log userId for debugging (optional)
-    print('User ID from SharedPreferences: $userId');
   }
 
   @override
@@ -80,7 +64,6 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 }
 
-// Main application entry point
 void main() async {
   await dotenv.load(fileName: '.env');
   WidgetsFlutterBinding.ensureInitialized();
