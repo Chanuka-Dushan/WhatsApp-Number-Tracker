@@ -3,12 +3,16 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="@android:color/transparent">
+    android:background="@drawable/floating_button_bg">
+
     <Button
         android:id="@+id/start_stop_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
         android:text="Start"
-        android:backgroundTint="#FF00FF00"
-        android:textColor="#FFFFFFFF" />
+        android:textSize="12sp"
+        android:textColor="@android:color/white"
+        android:background="@drawable/circle_button"
+        android:stateListAnimator="@null"
+        android:elevation="8dp" />
 </LinearLayout>

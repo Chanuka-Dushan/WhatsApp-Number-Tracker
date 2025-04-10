@@ -1,9 +1,7 @@
-import 'dart:ffi';
-
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:async';
@@ -22,7 +20,8 @@ class WhatsAppMonitorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WhatsApp Message Tracker',
+      debugShowCheckedModeBanner: false,
+      title: 'WhatsApp Monitor',
       theme: ThemeData(primarySwatch: Colors.green),
       home: const WhatsAppMobileMonitor(),
     );
@@ -46,7 +45,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   List<Map<String, dynamic>> savedContacts = [];
   List<Map<String, dynamic>> messagedContacts = [];
   bool isMonitoring = false;
-  String currentLabel = '';
+  String currentLabel = 'All';
   int contactOffset = 0;
   final int contactLimit = 400;
   bool isLoadingContacts = false;
@@ -64,6 +63,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     _loadUserAndStoreId();
     _checkAndRequestPermissions();
     _setupChannelListener();
+    _checkMonitoringStatus();
   }
 
   @override
@@ -72,15 +72,32 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     super.dispose();
   }
 
- Future<void> _loadUserAndStoreId() async {
-  final prefs = await SharedPreferences.getInstance();
-  setState(() {
-    userId = prefs.getInt('user_id')?.toString() ?? 'Unknown'; // Convert int to String, fallback to 'Unknown'
-    storeId = prefs.getString('store_id') ?? 'Unknown'; // Already a String, fallback to 'Unknown'
-  });
-  print('userId: $userId');
-  print('storeId: $storeId');
-}
+  Future<void> _loadUserAndStoreId() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      userId = prefs.getInt('user_id')?.toString() ?? 'Unknown';
+      storeId = prefs.getString('store_id') ?? 'Unknown';
+    });
+    print('userId: $userId');
+    print('storeId: $storeId');
+  }
+
+  Future<void> _checkMonitoringStatus() async {
+    try {
+      final isActive = await _channel.invokeMethod<bool>('isMonitoringActive');
+      setState(() {
+        isMonitoring = isActive ?? false;
+      });
+      final label = await _channel.invokeMethod<String>('getCurrentLabel');
+      setState(() {
+        currentLabel = label ?? 'All';
+      });
+      _monitoringStatusController.add(isMonitoring);
+      print('Monitoring status checked: $isMonitoring, label: $currentLabel');
+    } catch (e) {
+      print('Error checking monitoring status: $e');
+    }
+  }
 
   Future<void> _checkAndRequestPermissions() async {
     final deviceInfo = DeviceInfoPlugin();
@@ -88,7 +105,10 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     final sdkVersion = androidInfo.version.sdkInt;
 
     if (sdkVersion >= 33) {
-      await [Permission.storage, Permission.photos].request();
+      await [Permission.storage, Permission.photos, Permission.notification].request();
+      if (await Permission.notification.isDenied) {
+        _showError("Notification permission is required for monitoring controls.");
+      }
     } else if (sdkVersion >= 30) {
       if (await Permission.manageExternalStorage.isDenied) {
         await Permission.manageExternalStorage.request();
@@ -114,20 +134,22 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   void _setupChannelListener() {
     _channel.setMethodCallHandler((call) async {
+      print('MethodChannel call received: ${call.method} with arguments: ${call.arguments}');
       switch (call.method) {
         case 'onUIEvent':
           _handleUIEvent(call.arguments);
           break;
-        case 'requestStartMonitoring':
-          if (!isMonitoring) {
-            await _startMonitoring();
-          }
-          break;
         case 'monitoringStatusChanged':
           final isActive = call.arguments as bool;
-          setState(() => isMonitoring = isActive);
+          print('Monitoring status changed: $isActive');
+          setState(() {
+            isMonitoring = isActive;
+            if (!isActive) currentLabel = 'All';
+          });
           _monitoringStatusController.add(isActive);
           break;
+        default:
+          print('Unhandled method: ${call.method}');
       }
       return null;
     });
@@ -135,99 +157,74 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   void _handleUIEvent(dynamic arguments) {
     try {
+      print('Raw UI event data received: $arguments');
       final eventData = jsonDecode(arguments as String) as Map<String, dynamic>;
       final text = eventData['text']?.toString() ?? '';
+      final label = eventData['label']?.toString() ?? 'All';
 
+      print('Parsed event - text: $text, label: $label, isMonitoring: $isMonitoring');
       if (text.isNotEmpty && isMonitoring) {
-        final index = messagedContacts.indexWhere((c) => c['number'] == text);
-        if (index != -1) {
-          final labels =
-              List<String>.from(messagedContacts[index]['labels'] ?? []);
-          if (!labels.contains(currentLabel)) {
-            labels.add(currentLabel);
+        setState(() {
+          currentLabel = label;
+          print('Updated currentLabel to: $currentLabel');
+        });
+        final existingIndex = messagedContacts.indexWhere((c) => c['text'] == text);
+        if (existingIndex != -1) {
+          final labels = List<String>.from(messagedContacts[existingIndex]['labels'] ?? []);
+          if (!labels.contains(label)) {
+            labels.add(label);
+            setState(() {
+              messagedContacts[existingIndex]['labels'] = labels;
+              print('Updated existing contact: $text with labels: $labels');
+            });
+            _sendContactToApi(messagedContacts[existingIndex]);
           }
-          setState(() {
-            messagedContacts[index]['labels'] = labels;
-          });
         } else {
-          final newContact = _createContactFromEvent(text, eventData);
-          newContact['labels'] = [currentLabel];
-          setState(() => messagedContacts.add(newContact));
+          final newContact = _createContactFromEvent(text, label);
+          setState(() {
+            messagedContacts.add(newContact);
+            print('Added new contact: ${newContact['text']} with label: $label');
+          });
+          _sendContactToApi(newContact);
         }
+      } else {
+        print('Skipping event - text empty or monitoring off');
       }
     } catch (e) {
       print('Error handling UI event: $e');
     }
   }
 
-  Map<String, dynamic> _createContactFromEvent(
-      String text, Map<String, dynamic> eventData) {
-    if (_isPhoneNumber(text)) {
-      final savedMatch = savedContacts.firstWhere(
-        (c) => c['number'] == text,
-        orElse: () => {'name': 'Unknown', 'number': text},
-      );
-      return {
-        'name': savedMatch['name']!,
-        'number': text,
-        'label': currentLabel,
-        'timestamp': DateTime.now().toIso8601String()
-      };
-    } else {
-      final savedMatch = savedContacts.firstWhere(
-        (c) => c['name'] == text,
-        orElse: () => {'name': text, 'number': 'Not Available'},
-      );
-      return {
-        'name': text,
-        'number': savedMatch['number']!,
-        'label': currentLabel,
-        'timestamp': DateTime.now().toIso8601String()
-      };
-    }
+  Map<String, dynamic> _createContactFromEvent(String text, String label) {
+    final isPhone = _isPhoneNumber(text);
+    final savedMatch = savedContacts.firstWhere(
+      (c) => (isPhone && c['number'] == text) || (!isPhone && c['name'] == text),
+      orElse: () => isPhone ? {'name': 'Unknown', 'number': text} : {'name': text, 'number': 'Unsaved'},
+    );
+    return {
+      'text': text,
+      'name': savedMatch['name'],
+      'number': savedMatch['number'],
+      'labels': [label],
+      'timestamp': DateTime.now().toIso8601String(),
+      'isSaved': savedMatch['number'] != 'Unsaved' && savedMatch['name'] != 'Unsaved',
+    };
   }
 
   Future<void> _startMonitoring() async {
-    final label = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Enter Label'),
-        content: TextField(
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'Enter label for this session',
-            border: OutlineInputBorder(),
-          ),
-          onChanged: (value) => currentLabel = value,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, currentLabel),
-            child: const Text('Start', style: TextStyle(color: Colors.green)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-
-    if (label == null || label.isEmpty) return;
-
     try {
-      final result = await _channel
-          .invokeMethod<bool>('startMonitoring', {'label': label});
+      final result = await _channel.invokeMethod<bool>('startMonitoring');
       if (result == true) {
+        _monitoringStatusController.add(true);
         setState(() {
-          currentLabel = label;
           isMonitoring = true;
         });
-        _monitoringStatusController.add(true);
+        print('Monitoring started');
+      } else {
+        _showError("Failed to prepare monitoring");
       }
     } on PlatformException catch (e) {
-      _showError('Failed to start monitoring: ${e.message}');
-      setState(() => isMonitoring = false);
+      _showError('Failed to prepare monitoring: ${e.message}');
     }
   }
 
@@ -237,9 +234,10 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       if (result == true) {
         setState(() {
           isMonitoring = false;
-          currentLabel = '';
+          currentLabel = 'All';
         });
         _monitoringStatusController.add(false);
+        print('Monitoring stopped');
       }
     } on PlatformException catch (e) {
       _showError('Failed to stop monitoring: ${e.message}');
@@ -258,10 +256,10 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     final payload = {
       'name': contact['name'],
       'number': contact['number'],
-      'label': contact['label'],
+      'label': contact['labels'].join(', '),
       'timestamp': contact['timestamp'],
-      'store_id': storeId?.toString() ?? 'Unknown',
-      'user_id': userId?.toString() ?? 'Unknown',
+      'store_id': storeId ?? 'Unknown',
+      'user_id': userId ?? 'Unknown',
       'list_length': messagedContacts.length,
       'list_capacity': totalContactCount ?? 0,
     };
@@ -274,6 +272,8 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       );
       if (response.statusCode != 200) {
         print('Failed to save contact: ${response.body}');
+      } else {
+        print('Contact sent to API: ${contact['text']}');
       }
     } catch (e) {
       print('Error sending contact: $e');
@@ -287,7 +287,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       builder: (context) => AlertDialog(
         title: const Text('Enable Accessibility Service'),
         content: const Text(
-            'Please enable the WhatsApp Monitor Service in Accessibility Settings for the app to function properly.'),
+            'Please enable the WhatsApp Monitor Service in Accessibility Settings.'),
         actions: [
           TextButton(
             onPressed: () {
@@ -307,9 +307,9 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   Future<void> _getTotalContactCount() async {
     try {
-      final count =
-          await _contactsChannel.invokeMethod<int>('getTotalContactCount');
+      final count = await _contactsChannel.invokeMethod<int>('getTotalContactCount');
       setState(() => totalContactCount = count);
+      print('Total contact count: $count');
     } on PlatformException catch (e) {
       _showError('Failed to get contact count: ${e.message}');
     }
@@ -329,8 +329,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         if (contacts == null || contacts.isEmpty) break;
 
         setState(() {
-          savedContacts
-              .addAll(contacts.map((c) => Map<String, dynamic>.from(c)));
+          savedContacts.addAll(contacts.map((c) => Map<String, dynamic>.from(c)));
           contactOffset += contactLimit;
         });
 
@@ -341,6 +340,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         isLoadingContacts = false;
         allContactsLoaded = true;
       });
+      print('Loaded ${savedContacts.length} contacts');
     } on PlatformException catch (e) {
       setState(() => isLoadingContacts = false);
       _showError('Failed to load contacts: ${e.message}');
@@ -371,10 +371,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         await Permission.manageExternalStorage.request();
         hasPermission = await Permission.manageExternalStorage.isGranted;
       }
-      if (!hasPermission) {
-        await Permission.storage.request();
-        hasPermission = await Permission.storage.isGranted;
-      }
     } else {
       hasPermission = await Permission.storage.isGranted;
       if (!hasPermission) {
@@ -388,83 +384,34 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       return;
     }
 
-    // Step 1: Filter and merge contacts
-    List<Map<String, dynamic>> filteredContacts = messagedContacts
-        .where((c) => c['number'] != 'Not Available')
-        .toList();
-
-    Map<String, Map<String, dynamic>> mergedContactsMap = {};
-
-    for (var contact in filteredContacts) {
-      final number = contact['number'];
-      final name = contact['name'];
-      final labels = List<String>.from(contact['labels'] ?? [contact['label']]);
-
-      if (!mergedContactsMap.containsKey(number)) {
-        mergedContactsMap[number] = {
-          'store_id': storeId, // Use fetched storeId
-          'user_id': userId,   // Add fetched userId
-          'name': name,
-          'number': number,
-          'labels': labels.toSet(),
-        };
-      } else {
-        mergedContactsMap[number]!['labels'].addAll(labels);
-      }
-    }
-
-    // Step 2: Prepare rows for CSV
     List<List<String>> rows = [
-      ['store_id', 'user_id', 'name', 'phonenumber', 'label'] // Updated header
+      ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
     ];
 
-    for (var entry in mergedContactsMap.entries) {
-      final contact = entry.value;
-      final labelString = (contact['labels'] as Set<String>).join(', ');
-      rows.add([
-        contact['store_id'] ?? 'Unknown', // Fallback if null
-        contact['user_id'] ?? 'Unknown',  // Fallback if null
-        contact['name'],
-        contact['number'],
-        labelString,
-      ]);
+    for (var contact in messagedContacts) {
+      if (contact['number'] != 'Unsaved' && contact['number'].isNotEmpty) { // Only export contacts with numbers
+        final labelString = (contact['labels'] as List).join(', ');
+        rows.add([
+          storeId ?? 'Unknown',
+          userId ?? 'Unknown',
+          contact['name'],
+          contact['number'],
+          labelString,
+          contact['isSaved'].toString(),
+        ]);
+      }
     }
 
     String csvData = const ListToCsvConverter().convert(rows);
-
-    // Step 3: Save file
-    Directory? downloadsDir;
-    try {
-      if (Platform.isAndroid) {
-        downloadsDir = Directory('/storage/emulated/0/Download');
-        if (!await downloadsDir.exists()) {
-          downloadsDir = await getExternalStorageDirectory();
-        }
-      } else if (Platform.isIOS) {
-        downloadsDir = await getApplicationDocumentsDirectory();
-      }
-    } catch (e) {
-      print('Error getting directory: $e');
-      downloadsDir = await getApplicationDocumentsDirectory();
-    }
-
-    if (downloadsDir == null) {
-      _showError('Could not access storage directory.');
-      return;
-    }
-
-    await downloadsDir.create(recursive: true);
-
-    final timestamp =
-        DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-    final path = '${downloadsDir.path}/whatsapp_contacts_$timestamp.csv';
+    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+    final path = '/storage/emulated/0/Download/whatsapp_contacts_$timestamp.csv';
     final file = File(path);
 
     await file.writeAsString(csvData);
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Contacts exported to $path')),
     );
+    print('CSV exported to $path');
   }
 
   @override
@@ -487,14 +434,21 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       );
     }
 
-    final filteredContacts =
-        messagedContacts.where((c) => c['number'] != 'Not Available').toList();
+    // Filter contacts to only show those with valid numbers
+    final displayContacts = messagedContacts.where((contact) => 
+      contact['number'] != 'Unsaved' && contact['number'].isNotEmpty).toList();
 
+    print('Building UI with ${displayContacts.length} contacts (filtered from ${messagedContacts.length})');
     return Scaffold(
       appBar: AppBar(
-        title: const Text('WhatsApp Message Tracker'),
+        title: Text('WhatsApp Message Tracker - Label: $currentLabel'),
         backgroundColor: Colors.green,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() {}),
+            tooltip: 'Refresh UI',
+          ),
           IconButton(
             icon: const Icon(Icons.download),
             onPressed: _exportContactsToCsv,
@@ -507,8 +461,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
               return IconButton(
                 icon: Icon(snapshot.data! ? Icons.stop : Icons.play_arrow),
                 onPressed: snapshot.data! ? _stopMonitoring : _startMonitoring,
-                tooltip:
-                    snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
+                tooltip: snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
               );
             },
           ),
@@ -517,15 +470,24 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text(
+              'Monitoring: ${isMonitoring ? "Active" : "Inactive"}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
             Expanded(
-              child: ListView.builder(
-                itemCount: filteredContacts.length,
-                itemBuilder: (context, index) {
-                  final contact = filteredContacts[index];
-                  return ContactCard(contact: contact);
-                },
-              ),
+              child: displayContacts.isEmpty
+                  ? const Center(child: Text('No contacts with numbers detected yet.'))
+                  : ListView.builder(
+                      itemCount: displayContacts.length,
+                      itemBuilder: (context, index) {
+                        final contact = displayContacts[index];
+                        print('Rendering contact: ${contact['text']}');
+                        return ContactCard(contact: contact);
+                      },
+                    ),
             ),
           ],
         ),
@@ -541,23 +503,26 @@ class ContactCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final labels = (contact['labels'] ?? [contact['label']]).join(', ');
+    final labels = (contact['labels'] as List<dynamic>).join(', ');
+    final isSaved = contact['isSaved'] as bool;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: ListTile(
         title: Text(
-          contact['name'] ?? '',
+          contact['name'],
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(contact['number'] ?? ''),
+            Text('Number: ${contact['number']}'),
             const SizedBox(height: 4),
             Text('Labels: $labels'),
             const SizedBox(height: 4),
+            Text('Status: ${isSaved ? "Saved" : "Unsaved"}'),
+            const SizedBox(height: 4),
             Text(
-              contact['timestamp']?.split('.')[0] ?? '',
+              'Last Seen: ${contact['timestamp'].split('.')[0]}',
               style: const TextStyle(fontSize: 12),
             ),
           ],
