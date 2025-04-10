@@ -2,8 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
-import 'package:csv/csv.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:csv/csv.dart'; 
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
@@ -197,17 +196,20 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   Map<String, dynamic> _createContactFromEvent(String text, String label) {
     final isPhone = _isPhoneNumber(text);
-    final savedMatch = savedContacts.firstWhere(
+    final savedMatchIndex = savedContacts.indexWhere(
       (c) => (isPhone && c['number'] == text) || (!isPhone && c['name'] == text),
-      orElse: () => isPhone ? {'name': 'Unknown', 'number': text} : {'name': text, 'number': 'Unsaved'},
     );
+    final savedMatch = savedMatchIndex != -1 
+        ? savedContacts[savedMatchIndex]
+        : (isPhone ? {'name': 'Unknown', 'number': text} : {'name': text, 'number': 'Unsaved'});
+    
     return {
       'text': text,
       'name': savedMatch['name'],
       'number': savedMatch['number'],
       'labels': [label],
       'timestamp': DateTime.now().toIso8601String(),
-      'isSaved': savedMatch['number'] != 'Unsaved' && savedMatch['name'] != 'Unsaved',
+      'isSaved': savedMatchIndex != -1, // True only if actually found in savedContacts
     };
   }
 

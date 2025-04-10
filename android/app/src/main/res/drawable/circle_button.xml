@@ -2,14 +2,20 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_pressed="true">
         <shape android:shape="oval">
-            <solid android:color="#FF4081" />
-            <stroke android:width="2dp" android:color="#FFFFFF" />
+            <solid android:color="#FF4444" /> <!-- Darker red when pressed -->
+            <size android:width="60dp" android:height="60dp" />
+        </shape>
+    </item>
+    <item android:state_selected="true">
+        <shape android:shape="oval">
+            <solid android:color="#D32F2F" /> <!-- Red when monitoring -->
+            <size android:width="60dp" android:height="60dp" />
         </shape>
     </item>
     <item>
         <shape android:shape="oval">
-            <solid android:color="#3F51B5" />
-            <stroke android:width="2dp" android:color="#FFFFFF" />
+            <solid android:color="#4CAF50" /> <!-- Green when idle -->
+            <size android:width="60dp" android:height="60dp" />
         </shape>
     </item>
 </selector>

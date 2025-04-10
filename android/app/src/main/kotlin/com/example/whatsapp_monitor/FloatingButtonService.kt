@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.Color
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -13,6 +14,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -26,6 +28,7 @@ class FloatingButtonService : Service() {
     private var floatView: View? = null
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var notificationManager: NotificationManager
+    private lateinit var params: WindowManager.LayoutParams
 
     companion object {
         var channel: MethodChannel? = null
@@ -177,39 +180,104 @@ class FloatingButtonService : Service() {
     }
 
     private fun setupFloatingButton() {
-        try {
-            Log.d(TAG, "Setting up floating button")
-            floatView = LayoutInflater.from(this).inflate(R.layout.floating_button_layout, null)
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                else
-                    WindowManager.LayoutParams.TYPE_PHONE,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.END
-                x = 0
-                y = 100
-            }
-
-            val startStopButton = floatView!!.findViewById<Button>(R.id.start_stop_button)
-            updateButtonState(startStopButton)
-
-            startStopButton.setOnClickListener {
-                Log.d(TAG, "Floating button clicked")
-                toggleMonitoring(startStopButton, !WhatsAppMonitorService.isMonitoringActive())
-            }
-
-            windowManager.addView(floatView, params)
-            Log.d(TAG, "Floating button view added")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error setting up floating button: ${e.message}", e)
-            stopSelf()
+    try {
+        Log.d(TAG, "Setting up floating button")
+        floatView = LayoutInflater.from(this).inflate(R.layout.floating_button_layout, null)
+        params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = 20  // Added some margin from edge
+            y = 200 // Adjusted initial position
         }
+
+        val startStopButton = floatView!!.findViewById<Button>(R.id.start_stop_button)
+        updateButtonState(startStopButton)
+
+        // Enhance button appearance
+        startStopButton.apply {
+            setShadowLayer(4f, 2f, 2f, Color.BLACK) // Add shadow
+            scaleX = 1f
+            scaleY = 1f
+        }
+
+        startStopButton.setOnClickListener {
+            Log.d(TAG, "Floating button clicked")
+            toggleMonitoring(startStopButton, !WhatsAppMonitorService.isMonitoringActive())
+            // Add click animation
+            it.animate()
+                .scaleX(0.9f)
+                .scaleY(0.9f)
+                .setDuration(100)
+                .withEndAction {
+                    it.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(100)
+                        .start()
+                }
+                .start()
+        }
+
+        // Dragging functionality (already implemented)
+        floatView!!.setOnTouchListener(object : View.OnTouchListener {
+            private var initialX: Int = 0
+            private var initialY: Int = 0
+            private var initialTouchX: Float = 0f
+            private var initialTouchY: Float = 0f
+
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialX = params.x
+                        initialY = params.y
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        Log.d(TAG, "Touch down at x: $initialTouchX, y: $initialTouchY")
+                        // Add slight scale animation when touched
+                        v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(100).start()
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val deltaX = event.rawX - initialTouchX
+                        val deltaY = event.rawY - initialTouchY
+                        params.x = (initialX + deltaX).toInt()
+                        params.y = (initialY + deltaY).toInt()
+                        windowManager.updateViewLayout(floatView, params)
+                        Log.d(TAG, "Dragging to x: ${params.x}, y: ${params.y}")
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        Log.d(TAG, "Touch up at x: ${params.x}, y: ${params.y}")
+                        // Return to normal size
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                        // Check if it was a click (small movement) or drag
+                        val dx = Math.abs(event.rawX - initialTouchX)
+                        val dy = Math.abs(event.rawY - initialTouchY)
+                        if (dx < 10 && dy < 10) {
+                            v.performClick()
+                        }
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+
+        windowManager.addView(floatView, params)
+        Log.d(TAG, "Floating button view added")
+    } catch (e: Exception) {
+        Log.e(TAG, "Error setting up floating button: ${e.message}", e)
+        stopSelf()
     }
+}
 
     private fun hideFloatingButton() {
         try {
@@ -228,13 +296,15 @@ class FloatingButtonService : Service() {
 
     private fun updateButtonState(button: Button) {
         handler.post {
-            button.text = if (WhatsAppMonitorService.isMonitoringActive()) "Stop" else "Start"
+            val isMonitoring = WhatsAppMonitorService.isMonitoringActive()
+            button.text = if (isMonitoring) "Stop" else "Start"
             button.setBackgroundColor(
-                if (WhatsAppMonitorService.isMonitoringActive())
+                if (isMonitoring)
                     resources.getColor(android.R.color.holo_red_light)
                 else
                     resources.getColor(android.R.color.holo_green_light)
             )
+            button.isSelected = isMonitoring // Switches drawable between play and stop
             updateNotification()
         }
     }
