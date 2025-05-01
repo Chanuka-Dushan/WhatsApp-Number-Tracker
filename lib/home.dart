@@ -2,12 +2,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
-import 'package:csv/csv.dart'; 
+import 'package:csv/csv.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:http_parser/http_parser.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() {
   runApp(const WhatsAppMonitorApp());
@@ -39,7 +41,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       MethodChannel('com.example.whatsapp_monitor/accessibility');
   static const MethodChannel _contactsChannel =
       MethodChannel('com.example.whatsapp_monitor/contacts');
-  static const String apiUrl = 'http://test-server:3008/api/contacts';
+
 
   List<Map<String, dynamic>> savedContacts = [];
   List<Map<String, dynamic>> messagedContacts = [];
@@ -50,6 +52,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   bool isLoadingContacts = false;
   int? totalContactCount;
   bool allContactsLoaded = false;
+  String? loadingError;
 
   String? userId;
   String? storeId;
@@ -99,6 +102,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   }
 
   Future<void> _checkAndRequestPermissions() async {
+    print('Checking and requesting permissions...');
     final deviceInfo = DeviceInfoPlugin();
     final androidInfo = await deviceInfo.androidInfo;
     final sdkVersion = androidInfo.version.sdkInt;
@@ -176,7 +180,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
               messagedContacts[existingIndex]['labels'] = labels;
               print('Updated existing contact: $text with labels: $labels');
             });
-            _sendContactToApi(messagedContacts[existingIndex]);
+            
           }
         } else {
           final newContact = _createContactFromEvent(text, label);
@@ -184,7 +188,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
             messagedContacts.add(newContact);
             print('Added new contact: ${newContact['text']} with label: $label');
           });
-          _sendContactToApi(newContact);
+        
         }
       } else {
         print('Skipping event - text empty or monitoring off');
@@ -199,17 +203,17 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     final savedMatchIndex = savedContacts.indexWhere(
       (c) => (isPhone && c['number'] == text) || (!isPhone && c['name'] == text),
     );
-    final savedMatch = savedMatchIndex != -1 
+    final savedMatch = savedMatchIndex != -1
         ? savedContacts[savedMatchIndex]
         : (isPhone ? {'name': 'Unknown', 'number': text} : {'name': text, 'number': 'Unsaved'});
-    
+
     return {
       'text': text,
       'name': savedMatch['name'],
       'number': savedMatch['number'],
       'labels': [label],
       'timestamp': DateTime.now().toIso8601String(),
-      'isSaved': savedMatchIndex != -1, // True only if actually found in savedContacts
+      'isSaved': savedMatchIndex != -1,
     };
   }
 
@@ -252,36 +256,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     );
   }
 
-  Future<void> _sendContactToApi(Map<String, dynamic> contact) async {
-    if (userId == null || storeId == null) return;
-
-    final payload = {
-      'name': contact['name'],
-      'number': contact['number'],
-      'label': contact['labels'].join(', '),
-      'timestamp': contact['timestamp'],
-      'store_id': storeId ?? 'Unknown',
-      'user_id': userId ?? 'Unknown',
-      'list_length': messagedContacts.length,
-      'list_capacity': totalContactCount ?? 0,
-    };
-
-    try {
-      final response = await http.post(
-        Uri.parse(apiUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      );
-      if (response.statusCode != 200) {
-        print('Failed to save contact: ${response.body}');
-      } else {
-        print('Contact sent to API: ${contact['text']}');
-      }
-    } catch (e) {
-      print('Error sending contact: $e');
-    }
-  }
-
   void _showAccessibilityPrompt() {
     showDialog(
       context: context,
@@ -310,42 +284,69 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   Future<void> _getTotalContactCount() async {
     try {
       final count = await _contactsChannel.invokeMethod<int>('getTotalContactCount');
-      setState(() => totalContactCount = count);
+      setState(() {
+        totalContactCount = count;
+      });
       print('Total contact count: $count');
     } on PlatformException catch (e) {
+      print('Failed to get contact count: $e');
+      setState(() {
+        loadingError = 'Failed to get contact count: ${e.message}';
+        allContactsLoaded = true;
+      });
       _showError('Failed to get contact count: ${e.message}');
     }
   }
 
   Future<void> _loadAllContacts() async {
-    if (isLoadingContacts || allContactsLoaded) return;
-    setState(() => isLoadingContacts = true);
+    if (isLoadingContacts || allContactsLoaded) {
+      print('Skipping loadAllContacts: isLoadingContacts=$isLoadingContacts, allContactsLoaded=$allContactsLoaded');
+      return;
+    }
+    setState(() {
+      isLoadingContacts = true;
+      loadingError = null;
+    });
+    print('Starting to load contacts...');
 
     try {
       while (savedContacts.length < (totalContactCount ?? 0)) {
+        print('Fetching contacts: offset=$contactOffset, limit=$contactLimit');
         final contacts = await _contactsChannel.invokeMethod<List<dynamic>>(
           'getPhoneContacts',
           {'offset': contactOffset, 'limit': contactLimit},
         );
 
-        if (contacts == null || contacts.isEmpty) break;
+        if (contacts == null || contacts.isEmpty) {
+          print('No more contacts to load or contacts null');
+          break;
+        }
 
         setState(() {
           savedContacts.addAll(contacts.map((c) => Map<String, dynamic>.from(c)));
           contactOffset += contactLimit;
+          print('Loaded ${contacts.length} contacts, total saved: ${savedContacts.length}');
         });
 
-        if (contacts.length < contactLimit) break;
+        if (contacts.length < contactLimit) {
+          print('Received fewer contacts than limit, stopping');
+          break;
+        }
       }
 
       setState(() {
         isLoadingContacts = false;
         allContactsLoaded = true;
       });
-      print('Loaded ${savedContacts.length} contacts');
-    } on PlatformException catch (e) {
-      setState(() => isLoadingContacts = false);
-      _showError('Failed to load contacts: ${e.message}');
+      print('Finished loading ${savedContacts.length} contacts');
+    } catch (e) {
+      print('Error loading contacts: $e');
+      setState(() {
+        isLoadingContacts = false;
+        allContactsLoaded = true;
+        loadingError = 'Failed to load contacts: $e';
+      });
+      _showError('Failed to load contacts: $e');
     }
   }
 
@@ -355,69 +356,120 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     return phoneRegex.hasMatch(cleanedText);
   }
 
-  Future<void> _exportContactsToCsv() async {
-    final deviceInfo = DeviceInfoPlugin();
-    final androidInfo = await deviceInfo.androidInfo;
-    final sdkVersion = androidInfo.version.sdkInt;
+ Future<void> _exportContactsToCsv() async {
+  final deviceInfo = DeviceInfoPlugin();
+  final androidInfo = await deviceInfo.androidInfo;
+  final sdkVersion = androidInfo.version.sdkInt;
 
-    bool hasPermission = false;
-    if (sdkVersion >= 33) {
-      hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
-      if (!hasPermission) {
-        await [Permission.photos, Permission.storage].request();
-        hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
-      }
-    } else if (sdkVersion >= 30) {
-      hasPermission = await Permission.manageExternalStorage.isGranted;
-      if (!hasPermission) {
-        await Permission.manageExternalStorage.request();
-        hasPermission = await Permission.manageExternalStorage.isGranted;
-      }
-    } else {
-      hasPermission = await Permission.storage.isGranted;
-      if (!hasPermission) {
-        await Permission.storage.request();
-        hasPermission = await Permission.storage.isGranted;
-      }
-    }
-
+  bool hasPermission = false;
+  if (sdkVersion >= 33) {
+   hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
     if (!hasPermission) {
-      _showError('Storage permission denied. Cannot export CSV.');
-      return;
+      await [Permission.photos, Permission.storage].request();
+      hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
     }
-
-    List<List<String>> rows = [
-      ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
-    ];
-
-    for (var contact in messagedContacts) {
-      if (contact['number'] != 'Unsaved' && contact['number'].isNotEmpty) { // Only export contacts with numbers
-        final labelString = (contact['labels'] as List).join(', ');
-        rows.add([
-          storeId ?? 'Unknown',
-          userId ?? 'Unknown',
-          contact['name'],
-          contact['number'],
-          labelString,
-          contact['isSaved'].toString(),
-        ]);
-      }
+  } else if (sdkVersion >= 30) {
+    hasPermission = await Permission.manageExternalStorage.isGranted;
+    if (!hasPermission) {
+      await Permission.manageExternalStorage.request();
+      hasPermission = await Permission.manageExternalStorage.isGranted;
     }
-
-    String csvData = const ListToCsvConverter().convert(rows);
-    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-    final path = '/storage/emulated/0/Download/whatsapp_contacts_$timestamp.csv';
-    final file = File(path);
-
-    await file.writeAsString(csvData);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Contacts exported to $path')),
-    );
-    print('CSV exported to $path');
+  } else {
+    hasPermission = await Permission.storage.isGranted;
+    if (!hasPermission) {
+      await Permission.storage.request();
+      hasPermission = await Permission.storage.isGranted;
+    }
   }
 
+  if (!hasPermission) {
+    _showError('Storage permission denied. Cannot export CSV.');
+    return;
+  }
+
+  // Prepare CSV data
+  List<List<String>> rows = [
+    ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
+  ];
+
+  for (var contact in messagedContacts) {
+    if (contact['number'] != 'Unsaved' && contact['number'].isNotEmpty) {
+      // Handle label field according to requirements
+      List<String> labels = List<String>.from(contact['labels'] ?? []);
+      String labelString;
+
+      if (labels.length == 1 && labels[0].toLowerCase() == 'all') {
+        // Case 1: Only "All" label -> set to empty string
+        labelString = '';
+      } else if (labels.contains('All') || labels.contains('all')) {
+        // Case 2: Multiple labels including "All" -> remove "All" and join others
+        labels.removeWhere((label) => label.toLowerCase() == 'all');
+        labelString = labels.join(', ');
+      } else {
+        // Case 3: Other cases -> join labels as is
+        labelString = labels.join(', ');
+      }
+
+      // Clean phone number to include only digits
+      final cleanedNumber = contact['number'].toString().replaceAll(RegExp(r'[^0-9]'), '');
+      rows.add([
+        storeId ?? 'Unknown',
+        userId ?? 'Unknown',
+        contact['name'],
+        '"$cleanedNumber"',
+        labelString,
+        contact['isSaved'].toString(),
+      ]);
+    }
+  }
+
+  // Convert to CSV
+  String csvData = const ListToCsvConverter().convert(rows);
+
+  // Create a temporary file for the CSV
+  final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+  final path = '/storage/emulated/0/Download/whatsapp_contacts_$timestamp.csv';
+  final file = File(path);
+
+  // Write CSV to file
+  await file.writeAsString(csvData);
+  print('CSV written to $path');
+
+  // Send CSV to API
+  try {
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse("${dotenv.env['BASE_URL']}/api/bulk/uploadTempCustomers"),
+    );
+
+    request.files.add(
+      await http.MultipartFile.fromPath(
+        'csvFile',
+        path,
+        contentType: MediaType('text', 'csv'),
+      ),
+    );
+
+    final response = await request.send();
+
+    if (response.statusCode == 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('CSV uploaded successfully to API and saved to $path')),
+      );
+      print('CSV uploaded successfully');
+    } else {
+      final responseBody = await response.stream.bytesToString();
+      _showError('Failed to upload CSV: ${response.statusCode} - $responseBody');
+      print('Failed to upload CSV: ${response.statusCode} - $responseBody');
+    }
+  } catch (e) {
+    _showError('Error uploading CSV: $e');
+    print('Error uploading CSV: $e');
+  }
+}
   @override
   Widget build(BuildContext context) {
+    print('Building UI...');
     if (!allContactsLoaded) {
       return Scaffold(
         body: Center(
@@ -430,17 +482,38 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
                 'Loading Contacts: ${savedContacts.length} / ${totalContactCount ?? '...'}',
                 style: const TextStyle(fontSize: 18),
               ),
+              if (loadingError != null) ...[
+                const SizedBox(height: 20),
+                Text(
+                  'Error: $loadingError',
+                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      allContactsLoaded = false;
+                      isLoadingContacts = false;
+                      loadingError = null;
+                    });
+                    _loadAllContacts();
+                  },
+                  child: const Text('Retry'),
+                ),
+              ],
             ],
           ),
         ),
       );
     }
 
-    // Filter contacts to only show those with valid numbers
-    final displayContacts = messagedContacts.where((contact) => 
-      contact['number'] != 'Unsaved' && contact['number'].isNotEmpty).toList();
+    final displayContacts = messagedContacts
+        .where((contact) => contact['number'] != 'Unsaved' && contact['number'].isNotEmpty)
+        .toList();
 
     print('Building UI with ${displayContacts.length} contacts (filtered from ${messagedContacts.length})');
+    print('messagedContacts: ${messagedContacts.map((c) => c['text']).toList()}');
+
     return Scaffold(
       appBar: AppBar(
         title: Text('WhatsApp Message Tracker - Label: $currentLabel'),
@@ -479,6 +552,14 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
+            if (loadingError != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Text(
+                  'Contact Loading Error: $loadingError',
+                  style: const TextStyle(color: Colors.red, fontSize: 14),
+                ),
+              ),
             Expanded(
               child: displayContacts.isEmpty
                   ? const Center(child: Text('No contacts with numbers detected yet.'))
