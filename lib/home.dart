@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:open_file/open_file.dart';
 
 void main() {
   runApp(const WhatsAppMonitorApp());
@@ -31,6 +32,7 @@ class WhatsAppMonitorApp extends StatelessWidget {
 
 class WhatsAppMobileMonitor extends StatefulWidget {
   const WhatsAppMobileMonitor({super.key});
+  
 
   @override
   State<WhatsAppMobileMonitor> createState() => _WhatsAppMobileMonitorState();
@@ -42,7 +44,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   static const MethodChannel _contactsChannel =
       MethodChannel('com.example.whatsapp_monitor/contacts');
 
-
   List<Map<String, dynamic>> savedContacts = [];
   List<Map<String, dynamic>> messagedContacts = [];
   bool isMonitoring = false;
@@ -53,6 +54,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   int? totalContactCount;
   bool allContactsLoaded = false;
   String? loadingError;
+  String? lastExportedCsvPath; // Track the last exported CSV file path
 
   String? userId;
   String? storeId;
@@ -180,7 +182,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
               messagedContacts[existingIndex]['labels'] = labels;
               print('Updated existing contact: $text with labels: $labels');
             });
-            
           }
         } else {
           final newContact = _createContactFromEvent(text, label);
@@ -188,7 +189,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
             messagedContacts.add(newContact);
             print('Added new contact: ${newContact['text']} with label: $label');
           });
-        
         }
       } else {
         print('Skipping event - text empty or monitoring off');
@@ -356,117 +356,134 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     return phoneRegex.hasMatch(cleanedText);
   }
 
- Future<void> _exportContactsToCsv() async {
-  final deviceInfo = DeviceInfoPlugin();
-  final androidInfo = await deviceInfo.androidInfo;
-  final sdkVersion = androidInfo.version.sdkInt;
+  Future<void> _exportContactsToCsv() async {
+    final deviceInfo = DeviceInfoPlugin();
+    final androidInfo = await deviceInfo.androidInfo;
+    final sdkVersion = androidInfo.version.sdkInt;
 
-  bool hasPermission = false;
-  if (sdkVersion >= 33) {
-   hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
-    if (!hasPermission) {
-      await [Permission.photos, Permission.storage].request();
+    bool hasPermission = false;
+    if (sdkVersion >= 33) {
       hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
-    }
-  } else if (sdkVersion >= 30) {
-    hasPermission = await Permission.manageExternalStorage.isGranted;
-    if (!hasPermission) {
-      await Permission.manageExternalStorage.request();
-      hasPermission = await Permission.manageExternalStorage.isGranted;
-    }
-  } else {
-    hasPermission = await Permission.storage.isGranted;
-    if (!hasPermission) {
-      await Permission.storage.request();
-      hasPermission = await Permission.storage.isGranted;
-    }
-  }
-
-  if (!hasPermission) {
-    _showError('Storage permission denied. Cannot export CSV.');
-    return;
-  }
-
-  // Prepare CSV data
-  List<List<String>> rows = [
-    ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
-  ];
-
-  for (var contact in messagedContacts) {
-    if (contact['number'] != 'Unsaved' && contact['number'].isNotEmpty) {
-      // Handle label field according to requirements
-      List<String> labels = List<String>.from(contact['labels'] ?? []);
-      String labelString;
-
-      if (labels.length == 1 && labels[0].toLowerCase() == 'all') {
-        // Case 1: Only "All" label -> set to empty string
-        labelString = '';
-      } else if (labels.contains('All') || labels.contains('all')) {
-        // Case 2: Multiple labels including "All" -> remove "All" and join others
-        labels.removeWhere((label) => label.toLowerCase() == 'all');
-        labelString = labels.join(', ');
-      } else {
-        // Case 3: Other cases -> join labels as is
-        labelString = labels.join(', ');
+      if (!hasPermission) {
+        await [Permission.photos, Permission.storage].request();
+        hasPermission = await Permission.photos.isGranted || await Permission.storage.isGranted;
       }
-
-      // Clean phone number to include only digits
-      final cleanedNumber = contact['number'].toString().replaceAll(RegExp(r'[^0-9]'), '');
-      rows.add([
-        storeId ?? 'Unknown',
-        userId ?? 'Unknown',
-        contact['name'],
-        '"$cleanedNumber"',
-        labelString,
-        contact['isSaved'].toString(),
-      ]);
-    }
-  }
-
-  // Convert to CSV
-  String csvData = const ListToCsvConverter().convert(rows);
-
-  // Create a temporary file for the CSV
-  final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-  final path = '/storage/emulated/0/Download/whatsapp_contacts_$timestamp.csv';
-  final file = File(path);
-
-  // Write CSV to file
-  await file.writeAsString(csvData);
-  print('CSV written to $path');
-
-  // Send CSV to API
-  try {
-    var request = http.MultipartRequest(
-      'POST',
-      Uri.parse("${dotenv.env['BASE_URL']}/api/bulk/uploadTempCustomers"),
-    );
-
-    request.files.add(
-      await http.MultipartFile.fromPath(
-        'csvFile',
-        path,
-        contentType: MediaType('text', 'csv'),
-      ),
-    );
-
-    final response = await request.send();
-
-    if (response.statusCode == 200) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('CSV uploaded successfully to API and saved to $path')),
-      );
-      print('CSV uploaded successfully');
+    } else if (sdkVersion >= 30) {
+      hasPermission = await Permission.manageExternalStorage.isGranted;
+      if (!hasPermission) {
+        await Permission.manageExternalStorage.request();
+        hasPermission = await Permission.manageExternalStorage.isGranted;
+      }
     } else {
-      final responseBody = await response.stream.bytesToString();
-      _showError('Failed to upload CSV: ${response.statusCode} - $responseBody');
-      print('Failed to upload CSV: ${response.statusCode} - $responseBody');
+      hasPermission = await Permission.storage.isGranted;
+      if (!hasPermission) {
+        await Permission.storage.request();
+        hasPermission = await Permission.storage.isGranted;
+      }
     }
-  } catch (e) {
-    _showError('Error uploading CSV: $e');
-    print('Error uploading CSV: $e');
+
+    if (!hasPermission) {
+      _showError('Storage permission denied. Cannot export CSV.');
+      return;
+    }
+
+    // Prepare CSV data
+    List<List<String>> rows = [
+      ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
+    ];
+
+    for (var contact in messagedContacts) {
+      if (contact['number'] != 'Unsaved' && contact['number'].isNotEmpty) {
+        List<String> labels = List<String>.from(contact['labels'] ?? []);
+        String labelString;
+
+        if (labels.length == 1 && labels[0].toLowerCase() == 'all') {
+          labelString = '';
+        } else if (labels.contains('All') || labels.contains('all')) {
+          labels.removeWhere((label) => label.toLowerCase() == 'all');
+          labelString = labels.join(', ');
+        } else {
+          labelString = labels.join(', ');
+        }
+
+        final cleanedNumber = contact['number'].toString().replaceAll(RegExp(r'[^0-9]'), '');
+        rows.add([
+          storeId ?? 'Unknown',
+          userId ?? 'Unknown',
+          contact['name'],
+          '"$cleanedNumber"',
+          labelString,
+          contact['isSaved'].toString(),
+        ]);
+      }
+    }
+
+    // Convert to CSV
+    String csvData = const ListToCsvConverter().convert(rows);
+
+    // Create a temporary file for the CSV
+    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+    final path = '/storage/emulated/0/Download/${userId}_wac_${timestamp}.csv';
+    final file = File(path);
+
+    // Write CSV to file
+    await file.writeAsString(csvData);
+    print('CSV written to $path');
+
+    // Update state to show the "Open CSV" button
+    setState(() {
+      lastExportedCsvPath = path;
+    });
+
+    // Send CSV to API
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse("${dotenv.env['BASE_URL']}/api/bulk/uploadTempCustomers"),
+      );
+
+      request.files.add(
+        await http.MultipartFile.fromPath(
+          'csvFile',
+          path,
+          contentType: MediaType('text', 'csv'),
+        ),
+      );
+
+      final response = await request.send();
+
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('CSV uploaded successfully to API and saved to $path')),
+        );
+        print('CSV uploaded successfully');
+      } else {
+        final responseBody = await response.stream.bytesToString();
+        _showError('Failed to upload CSV: ${response.statusCode} - $responseBody');
+        print('Failed to upload CSV: ${response.statusCode} - $responseBody');
+      }
+    } catch (e) {
+      _showError('Error uploading CSV: $e');
+      print('Error uploading CSV: $e');
+    }
   }
-}
+
+  Future<void> _openCsvFile() async {
+    if (lastExportedCsvPath == null) {
+      _showError('No CSV file available to open.');
+      return;
+    }
+
+    try {
+      final result = await OpenFile.open(lastExportedCsvPath!);
+      if (result.type != ResultType.done) {
+        _showError('Failed to open CSV file: ${result.message}');
+      }
+    } catch (e) {
+      _showError('Error opening CSV file: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     print('Building UI...');
@@ -547,6 +564,18 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (lastExportedCsvPath != null) ...[
+              // ElevatedButton.icon(
+              //   onPressed: _openCsvFile,
+              //   icon: const Icon(Icons.open_in_new),
+              //   label: const Text('Open Exported CSV'),
+              //   style: ElevatedButton.styleFrom(
+              //     backgroundColor: Colors.blue,
+              //     foregroundColor: Colors.white,
+              //   ),
+              // ),
+              const SizedBox(height: 8),
+            ],
             Text(
               'Monitoring: ${isMonitoring ? "Active" : "Inactive"}',
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
