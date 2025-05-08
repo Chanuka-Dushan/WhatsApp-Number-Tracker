@@ -4,7 +4,7 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
-def kotlin_version = "1.9.0"
+def kotlin_version = "1.9.22"
 
 android {
     namespace "com.example.whatsapp_monitor"
@@ -12,12 +12,12 @@ android {
     ndkVersion "29.0.13113456"
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
 
     defaultConfig {
@@ -42,10 +42,9 @@ flutter {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
     implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1' // Should include AccessibilityServiceInfo
+    implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.12.0'
     implementation 'com.google.code.gson:gson:2.10.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'androidx.cardview:cardview:1.0.0'
-    implementation 'com.android.support:cardview-v7:28.0.0'
 }

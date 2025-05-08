@@ -1,0 +1,2 @@
+C:/Users/Dushan/Desktop/Ecommex Mobile Apps/whatsapp_monitor/android/app/.cxx/Debug/g66206f1/x86_64/CMakeFiles/edit_cache.dir
+C:/Users/Dushan/Desktop/Ecommex Mobile Apps/whatsapp_monitor/android/app/.cxx/Debug/g66206f1/x86_64/CMakeFiles/rebuild_cache.dir

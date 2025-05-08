@@ -11,6 +11,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:open_file/open_file.dart';
+import 'package:flutter_spinkit/flutter_spinkit.dart'; // For loader
 
 void main() {
   runApp(const WhatsAppMonitorApp());
@@ -32,7 +33,6 @@ class WhatsAppMonitorApp extends StatelessWidget {
 
 class WhatsAppMobileMonitor extends StatefulWidget {
   const WhatsAppMobileMonitor({super.key});
-  
 
   @override
   State<WhatsAppMobileMonitor> createState() => _WhatsAppMobileMonitorState();
@@ -54,10 +54,11 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   int? totalContactCount;
   bool allContactsLoaded = false;
   String? loadingError;
-  String? lastExportedCsvPath; // Track the last exported CSV file path
-
+  String? lastExportedCsvPath;
   String? userId;
   String? storeId;
+  bool isSaving = false; // Track saving state for loader
+  bool canSave = true; // Track if Save Data button is enabled
   final StreamController<bool> _monitoringStatusController =
       StreamController<bool>.broadcast();
 
@@ -65,6 +66,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
   void initState() {
     super.initState();
     _loadUserAndStoreId();
+    _loadSavedData(); // Load persisted data
     _checkAndRequestPermissions();
     _setupChannelListener();
     _checkMonitoringStatus();
@@ -84,6 +86,75 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     });
     print('userId: $userId');
     print('storeId: $storeId');
+  }
+
+  Future<void> _loadSavedData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedContactsJson = prefs.getString('savedContacts');
+    final messagedContactsJson = prefs.getString('messagedContacts');
+    setState(() {
+      if (savedContactsJson != null) {
+        savedContacts = (jsonDecode(savedContactsJson) as List)
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      }
+      if (messagedContactsJson != null) {
+        messagedContacts = (jsonDecode(messagedContactsJson) as List)
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      }
+    });
+    print('Loaded ${savedContacts.length} saved contacts and ${messagedContacts.length} messaged contacts');
+  }
+
+  Future<void> _autoSaveData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('savedContacts', jsonEncode(savedContacts));
+    await prefs.setString('messagedContacts', jsonEncode(messagedContacts));
+    print('Data auto-saved to SharedPreferences');
+  }
+
+  Future<void> _saveData() async {
+    if (!canSave) return;
+    setState(() {
+      isSaving = true;
+      canSave = false;
+    });
+    try {
+      await _exportContactsToCsv(); // Trigger CSV export and API upload
+    } finally {
+      setState(() {
+        isSaving = false;
+      });
+      Timer(const Duration(seconds: 60), () {
+        setState(() {
+          canSave = true;
+        });
+        print('Save Data button re-enabled after 60 seconds');
+      });
+    }
+  }
+
+  Future<void> _startNewSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('savedContacts');
+    await prefs.remove('messagedContacts');
+    setState(() {
+      savedContacts = [];
+      messagedContacts = [];
+      isMonitoring = false;
+      currentLabel = 'All';
+      contactOffset = 0;
+      allContactsLoaded = false;
+      loadingError = null;
+      lastExportedCsvPath = null;
+      canSave = true; // Ensure Save Data button is enabled for new session
+    });
+    await _loadAllContacts();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('New session started, all data cleared'), backgroundColor: Colors.green),
+    );
+    print('New session started, cleared all saved data');
   }
 
   Future<void> _checkMonitoringStatus() async {
@@ -160,7 +231,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     });
   }
 
-  void _handleUIEvent(dynamic arguments) {
+  Future<void> _handleUIEvent(dynamic arguments) async {
     try {
       print('Raw UI event data received: $arguments');
       final eventData = jsonDecode(arguments as String) as Map<String, dynamic>;
@@ -190,6 +261,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
             print('Added new contact: ${newContact['text']} with label: $label');
           });
         }
+        await _autoSaveData(); // Auto-save after updating messagedContacts
       } else {
         print('Skipping event - text empty or monitoring off');
       }
@@ -339,6 +411,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
         allContactsLoaded = true;
       });
       print('Finished loading ${savedContacts.length} contacts');
+      await _autoSaveData(); // Auto-save after loading contacts
     } catch (e) {
       print('Error loading contacts: $e');
       setState(() {
@@ -352,7 +425,7 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
 
   bool _isPhoneNumber(String text) {
     final phoneRegex = RegExp(r'^\+?[0-9]{6,14}$');
-    final cleanedText = text.replaceAll(RegExp(r'[\s\-\.\(\)]'), '');
+    final cleanedText = text.replaceAll(RegExp(r'[\s-.]'), '');
     return phoneRegex.hasMatch(cleanedText);
   }
 
@@ -387,7 +460,6 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       return;
     }
 
-    // Prepare CSV data
     List<List<String>> rows = [
       ['store_id', 'user_id', 'name', 'phonenumber', 'label', 'is_saved']
     ];
@@ -418,24 +490,21 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
       }
     }
 
-    // Convert to CSV
     String csvData = const ListToCsvConverter().convert(rows);
 
-    // Create a temporary file for the CSV
     final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
     final path = '/storage/emulated/0/Download/${userId}_wac_${timestamp}.csv';
     final file = File(path);
 
-    // Write CSV to file
+    // Write CSV to file and wait for completion
     await file.writeAsString(csvData);
     print('CSV written to $path');
 
-    // Update state to show the "Open CSV" button
     setState(() {
       lastExportedCsvPath = path;
     });
 
-    // Send CSV to API
+    // Perform API upload and wait for completion
     try {
       var request = http.MultipartRequest(
         'POST',
@@ -525,85 +594,104 @@ class _WhatsAppMobileMonitorState extends State<WhatsAppMobileMonitor> {
     }
 
     final displayContacts = messagedContacts
-        .where((contact) => contact['number'] != 'Unsaved' && contact['number'].isNotEmpty)
-        .toList();
-
-    print('Building UI with ${displayContacts.length} contacts (filtered from ${messagedContacts.length})');
+        .where((contact) => contact['number'] != 'Unsaved' && contact['number'].isNotEmpty);
+        print('Building UI with ${displayContacts.length} contacts (filtered from ${messagedContacts.length})');
     print('messagedContacts: ${messagedContacts.map((c) => c['text']).toList()}');
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('WhatsApp Message Tracker - Label: $currentLabel'),
-        backgroundColor: Colors.green,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() {}),
-            tooltip: 'Refresh UI',
-          ),
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: _exportContactsToCsv,
-            tooltip: 'Export as CSV',
-          ),
-          StreamBuilder<bool>(
-            stream: _monitoringStatusController.stream,
-            initialData: isMonitoring,
-            builder: (context, snapshot) {
-              return IconButton(
-                icon: Icon(snapshot.data! ? Icons.stop : Icons.play_arrow),
-                onPressed: snapshot.data! ? _stopMonitoring : _startMonitoring,
-                tooltip: snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
-              );
-            },
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (lastExportedCsvPath != null) ...[
-              // ElevatedButton.icon(
-              //   onPressed: _openCsvFile,
-              //   icon: const Icon(Icons.open_in_new),
-              //   label: const Text('Open Exported CSV'),
-              //   style: ElevatedButton.styleFrom(
-              //     backgroundColor: Colors.blue,
-              //     foregroundColor: Colors.white,
-              //   ),
-              // ),
-              const SizedBox(height: 8),
-            ],
-            Text(
-              'Monitoring: ${isMonitoring ? "Active" : "Inactive"}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            if (loadingError != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8.0),
-                child: Text(
-                  'Contact Loading Error: $loadingError',
-                  style: const TextStyle(color: Colors.red, fontSize: 14),
-                ),
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            title: Text('WhatsApp Message Tracker - Label: $currentLabel'),
+            backgroundColor: Colors.green,
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () => setState(() {}),
+                tooltip: 'Refresh UI',
               ),
-            Expanded(
-              child: displayContacts.isEmpty
-                  ? const Center(child: Text('No contacts with numbers detected yet.'))
-                  : ListView.builder(
-                      itemCount: displayContacts.length,
-                      itemBuilder: (context, index) {
-                        final contact = displayContacts[index];
-                        print('Rendering contact: ${contact['text']}');
-                        return ContactCard(contact: contact);
-                      },
+              StreamBuilder<bool>(
+                stream: _monitoringStatusController.stream,
+                initialData: isMonitoring,
+                builder: (context, snapshot) {
+                  return IconButton(
+                    icon: Icon(snapshot.data! ? Icons.stop : Icons.play_arrow),
+                    onPressed: snapshot.data! ? _stopMonitoring : _startMonitoring,
+                    tooltip: snapshot.data! ? 'Stop Monitoring' : 'Start Monitoring',
+                  );
+                },
+              ),
+            ],
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Monitoring: ${isMonitoring ? "Active" : "Inactive"}',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _startNewSession,
+                      icon: const Icon(Icons.fiber_new),
+                      label: const Text('New Session'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                      ),
                     ),
+                    ElevatedButton.icon(
+                      onPressed: canSave ? _saveData : null,
+                      icon: const Icon(Icons.save),
+                      label: const Text('Save Data'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (loadingError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8.0),
+                    child: Text(
+                      'Contact Loading Error: $loadingError',
+                      style: const TextStyle(color: Colors.red, fontSize: 14),
+                    ),
+                  ),
+                Expanded(
+                  child: displayContacts.isEmpty
+                      ? const Center(child: Text('No contacts with numbers detected yet.'))
+                      : ListView.builder(
+                          itemCount: displayContacts.length,
+                          itemBuilder: (context, index) {
+                            final contact = displayContacts.toList()[index];
+                            print('Rendering contact: ${contact['text']}');
+                            return ContactCard(contact: contact);
+                          },
+                        ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        if (isSaving)
+          Container(
+            color: Colors.black54,
+            child: const Center(
+              child: SpinKitWave(
+                color: Colors.green,
+                size: 50.0,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
